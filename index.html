@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#3498db">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="נתצ ת״א">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <title>נתיבי תחבורה ציבורית - תל אביב-יפו</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+            direction: rtl;
+        }
+
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+
+        /* Top info bar */
+        .info-bar {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 12px 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 14px;
+            max-width: 95%;
+            backdrop-filter: blur(10px);
+        }
+
+        .info-bar h1 {
+            font-size: 18px;
+            color: #1a1a2e;
+            white-space: nowrap;
+        }
+
+        .info-bar .separator {
+            width: 1px;
+            height: 30px;
+            background: #ccc;
+        }
+
+        .clock-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .clock-icon {
+            font-size: 20px;
+        }
+
+        .clock-time {
+            font-size: 22px;
+            font-weight: bold;
+            color: #1a1a2e;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .clock-day {
+            font-size: 13px;
+            color: #555;
+        }
+
+        .status-section {
+            display: flex;
+            gap: 16px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid rgba(0,0,0,0.2);
+        }
+
+        .status-dot.red { background: #e74c3c; }
+        .status-dot.green { background: #2ecc71; }
+        .status-dot.gray { background: #95a5a6; }
+
+        .status-count {
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .status-label {
+            font-size: 12px;
+            color: #666;
+        }
+
+        /* Legend panel */
+        .legend-panel {
+            position: absolute;
+            bottom: 30px;
+            right: 10px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 10px;
+            padding: 14px 18px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            font-size: 13px;
+            backdrop-filter: blur(10px);
+        }
+
+        .legend-panel h3 {
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .legend-line {
+            width: 30px;
+            height: 5px;
+            border-radius: 3px;
+        }
+
+        .legend-line.red { background: #e74c3c; }
+        .legend-line.green { background: #2ecc71; }
+        .legend-line.gray { background: #95a5a6; }
+
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(26, 26, 46, 0.92);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            transition: opacity 0.5s ease;
+        }
+
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255,255,255,0.2);
+            border-top-color: #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            font-size: 18px;
+            margin-bottom: 8px;
+        }
+
+        .loading-sub {
+            font-size: 13px;
+            color: rgba(255,255,255,0.6);
+        }
+
+        /* Popup styling */
+        .lane-popup {
+            direction: rtl;
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+            font-size: 13px;
+            min-width: 220px;
+        }
+
+        .lane-popup h3 {
+            font-size: 15px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .lane-popup .popup-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .lane-popup .popup-label {
+            color: #666;
+        }
+
+        .lane-popup .popup-value {
+            font-weight: 600;
+        }
+
+        .lane-popup .popup-status {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+
+        .lane-popup .popup-status.blocked {
+            background: #e74c3c;
+        }
+
+        .lane-popup .popup-status.open {
+            background: #2ecc71;
+        }
+
+        /* Camera markers */
+        .camera-marker {
+            background: none;
+            border: none;
+        }
+
+        .camera-icon-inner {
+            width: 28px;
+            height: 28px;
+            background: #2c3e50;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+
+        .camera-icon-inner:hover {
+            transform: scale(1.2);
+        }
+
+        .legend-camera-icon {
+            width: 20px;
+            height: 20px;
+            background: #2c3e50;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+
+        .legend-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+
+        .legend-toggle input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .legend-toggle label {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        @media (max-width: 768px) {
+            .info-bar {
+                flex-wrap: wrap;
+                justify-content: center;
+                padding: 10px 16px;
+                gap: 10px;
+            }
+
+            .info-bar h1 {
+                font-size: 15px;
+                width: 100%;
+                text-align: center;
+            }
+
+            .info-bar .separator {
+                display: none;
+            }
+
+            .legend-panel {
+                bottom: 10px;
+                right: 10px;
+                font-size: 12px;
+                padding: 10px 14px;
+            }
+        }
+
+        /* ====== Driving mode controls ====== */
+        .drive-controls {
+            position: absolute;
+            bottom: 30px;
+            left: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .drive-btn {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255,255,255,0.95);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+            font-size: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            backdrop-filter: blur(10px);
+        }
+
+        .drive-btn:active { transform: scale(0.92); }
+        .drive-btn.active { background: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,0.4); }
+        .drive-btn.active-red { background: #e74c3c; box-shadow: 0 0 0 3px rgba(231,76,60,0.4); }
+
+        /* Voice alert banner */
+        .voice-banner {
+            position: absolute;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1100;
+            background: #e74c3c;
+            color: #fff;
+            padding: 14px 28px;
+            border-radius: 14px;
+            font-size: 18px;
+            font-weight: 700;
+            box-shadow: 0 6px 30px rgba(231,76,60,0.5);
+            display: none;
+            text-align: center;
+            max-width: 90%;
+            animation: bannerPulse 0.6s ease-in-out;
+        }
+
+        .voice-banner.show { display: block; }
+
+        @keyframes bannerPulse {
+            0%, 100% { transform: translateX(-50%) scale(1); }
+            50% { transform: translateX(-50%) scale(1.05); }
+        }
+
+        /* GPS accuracy circle */
+        .gps-accuracy {
+            stroke: #3498db;
+            fill: rgba(52,152,219,0.12);
+        }
+
+        /* User location dot */
+        .user-marker {
+            background: none;
+            border: none;
+        }
+
+        .user-dot {
+            width: 20px;
+            height: 20px;
+            background: #3498db;
+            border: 3px solid #fff;
+            border-radius: 50%;
+            box-shadow: 0 0 8px rgba(52,152,219,0.6);
+        }
+
+        .user-dot.has-heading {
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+        }
+
+        /* Driving mode fullscreen style */
+        body.driving-mode .info-bar { display: none; }
+        body.driving-mode .legend-panel { display: none; }
+        body.driving-mode .drive-controls { bottom: 40px; }
+
+        @media (max-width: 768px) {
+            .drive-btn {
+                width: 48px;
+                height: 48px;
+                font-size: 22px;
+            }
+            .drive-controls { bottom: 20px; left: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">טוען נתיבי תחבורה ציבורית...</div>
+        <div class="loading-sub">מתחבר לשרת GIS עיריית תל אביב-יפו</div>
+    </div>
+
+    <!-- Top info bar -->
+    <div class="info-bar" id="infoBar">
+        <h1>🚌 נתיבי תחבורה ציבורית - תל אביב-יפו</h1>
+        <div class="separator"></div>
+        <div class="clock-section">
+            <span class="clock-icon">🕐</span>
+            <div>
+                <div class="clock-time" id="clockTime">--:--</div>
+                <div class="clock-day" id="clockDay">--</div>
+            </div>
+        </div>
+        <div class="separator"></div>
+        <div class="status-section">
+            <div class="status-item">
+                <div class="status-dot red"></div>
+                <div>
+                    <div class="status-count" id="blockedCount">-</div>
+                    <div class="status-label">חסום</div>
+                </div>
+            </div>
+            <div class="status-item">
+                <div class="status-dot green"></div>
+                <div>
+                    <div class="status-count" id="openCount">-</div>
+                    <div class="status-label">פתוח</div>
+                </div>
+            </div>
+            <div class="status-item">
+                <div class="status-dot gray"></div>
+                <div>
+                    <div class="status-count" id="unknownCount">-</div>
+                    <div class="status-label">ללא שעות</div>
+                </div>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" style="background: #2c3e50; font-size: 8px; display: flex; align-items: center; justify-content: center;">📷</div>
+                <div>
+                    <div class="status-count" id="cameraCount">-</div>
+                    <div class="status-label">מצלמות</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Legend panel -->
+    <div class="legend-panel">
+        <h3>מקרא</h3>
+        <div class="legend-item">
+            <div class="legend-line red"></div>
+            <span>חסום לרכב פרטי כעת</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-line green"></div>
+            <span>פתוח לרכב פרטי כעת</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-line gray"></div>
+            <span>נתצ קבוע (חסום תמיד) / ללא מידע שעות</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-camera-icon">📷</div>
+            <span>מצלמת נת"צ</span>
+        </div>
+        <div class="legend-toggle">
+            <input type="checkbox" id="toggleCameras" checked>
+            <label for="toggleCameras">הצג מצלמות</label>
+        </div>
+        <div style="margin-top: 10px; font-size: 11px; color: #888;">
+            מקור: GIS עיריית תל אביב-יפו<br>
+            שכבה 611 – נתיבי תחבורה ציבורית<br>
+            שכבה 949 – מצלמות נת"צ
+        </div>
+    </div>
+
+    <!-- Map -->
+    <div id="map"></div>
+
+    <!-- Voice alert banner -->
+    <div class="voice-banner" id="voiceBanner"></div>
+
+    <!-- Driving mode controls -->
+    <div class="drive-controls">
+        <button class="drive-btn" id="btnGps" title="מיקום GPS">📍</button>
+        <button class="drive-btn" id="btnVoice" title="התראות קוליות">🔇</button>
+        <button class="drive-btn" id="btnDrive" title="מצב נהיגה">🚗</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="bus_lane_hours.js?v=4"></script>
+    <script src="app.js?v=4"></script>
+</body>
+</html>
