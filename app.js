@@ -2498,8 +2498,8 @@ let simCurrentIdx = 0;          // current segment index during playback
 let simProgress = 0;            // 0..1 progress along current segment
 let simLastTime = 0;            // last animation timestamp
 let _simMapClickHandler = null; // reference to map click handler
-const SIM_SPEED_KMH = 40;      // km/h
-const SIM_SPEED_MPS = SIM_SPEED_KMH / 3.6;  // ~11.11 m/s
+const SIM_SPEED_KMH = 75;      // km/h
+const SIM_SPEED_MPS = SIM_SPEED_KMH / 3.6;  // ~20.83 m/s
 
 /**
  * Toggle the simulator panel open/closed.
