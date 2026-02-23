@@ -413,10 +413,11 @@ function initMap() {
     // Add zoom control on the left side (since RTL)
     L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-    // Base tile layer - OpenStreetMap
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> | נתונים: עיריית תל אביב-יפו',
-        maxZoom: 19
+    // Base tile layer - CartoDB Positron (light gray, no colorful roads)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a> | נתונים: עיריית תל אביב-יפו',
+        maxZoom: 20,
+        subdomains: 'abcd'
     }).addTo(map);
 
     laneLayerGroup = L.layerGroup().addTo(map);
