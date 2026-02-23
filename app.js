@@ -228,7 +228,30 @@ function getLaneStatus(feature, now) {
 
     // If lane is not active, it's open
     if (status && status !== 'פעיל') {
-        return { blocked: false, reason: 'נתצ לא פעיל', category: 'open', schedule: null };
+        return { blocked: false, reason: 'נתצ לא פעיל', category: 'open', schedule: null, signOverride: null };
+    }
+
+    // Check for community sign override first
+    const signOvr = typeof getSignOverride === 'function' ? getSignOverride(feature) : null;
+    if (signOvr && signOvr.hours) {
+        const ovr = signOvr.hours;
+        if (ovr.allWeek) {
+            return { blocked: true, reason: 'נתצ קבוע – חסום תמיד (24/7) 🪧', category: 'blocked', schedule: ovr, signOverride: signOvr };
+        }
+        let ranges = null;
+        if (dayType === 'sun_thurs') ranges = ovr.sun_thu;
+        else if (dayType === 'fri') ranges = ovr.fri;
+        else if (dayType === 'sat') ranges = ovr.sat;
+        if (!ranges || ranges.length === 0) {
+            return { blocked: false, reason: `אין הגבלה ביום ${HEBREW_DAYS[now.getDay()]} 🪧`, category: 'open', schedule: ovr, signOverride: signOvr };
+        }
+        for (const [start, end] of ranges) {
+            if (isInTimeRange(currentHr, start, end)) {
+                return { blocked: true, reason: `חסום כעת: ${formatHour(start)} - ${formatHour(end)} 🪧`, category: 'blocked', schedule: ovr, signOverride: signOvr };
+            }
+        }
+        const rangeStr = ranges.map(r => `${formatHour(r[0])}-${formatHour(r[1])}`).join(', ');
+        return { blocked: false, reason: `פתוח כעת (הגבלה: ${rangeStr}) 🪧`, category: 'open', schedule: ovr, signOverride: signOvr };
     }
 
     // Find schedule from bus_lane_hours.js
@@ -236,12 +259,12 @@ function getLaneStatus(feature, now) {
 
     if (!schedule) {
         // No schedule data found for this feature → unknown
-        return { blocked: true, reason: 'לא נמצא מידע על שעות – ייתכן שחסום', category: 'unknown', schedule: null };
+        return { blocked: true, reason: 'לא נמצא מידע על שעות – ייתכן שחסום', category: 'unknown', schedule: null, signOverride: null };
     }
 
     // 24/7 permanent bus lane
     if (schedule.allWeek) {
-        return { blocked: true, reason: 'נתצ קבוע – חסום תמיד (24/7)', category: 'blocked', schedule };
+        return { blocked: true, reason: 'נתצ קבוע – חסום תמיד (24/7)', category: 'blocked', schedule, signOverride: null };
     }
 
     // Get time ranges for current day type
@@ -260,7 +283,8 @@ function getLaneStatus(feature, now) {
             blocked: false,
             reason: `אין הגבלה ביום ${HEBREW_DAYS[now.getDay()]}`,
             category: 'open',
-            schedule
+            schedule,
+            signOverride: null
         };
     }
 
@@ -271,7 +295,8 @@ function getLaneStatus(feature, now) {
                 blocked: true,
                 reason: `חסום כעת: ${formatHour(start)} - ${formatHour(end)}`,
                 category: 'blocked',
-                schedule
+                schedule,
+                signOverride: null
             };
         }
     }
@@ -282,7 +307,8 @@ function getLaneStatus(feature, now) {
         blocked: false,
         reason: `פתוח כעת (הגבלה: ${rangeStr})`,
         category: 'open',
-        schedule
+        schedule,
+        signOverride: null
     };
 }
 
@@ -509,6 +535,37 @@ function createPopupContent(feature, status) {
         hoursHtml = '<div class="popup-row"><span class="popup-label">שעות הגבלה:</span><span class="popup-value" style="color:#e67e22;">לא נמצא מידע (לא בטבלת העירייה)</span></div>';
     }
 
+    // Sign verification badge
+    let signBadgeHtml = '';
+    const streetReports = typeof getReportsForStreet === 'function' ? getReportsForStreet(a.street_name) : [];
+    if (status.signOverride) {
+        const ovrDate = new Date(status.signOverride.timestamp).toLocaleDateString('he-IL');
+        signBadgeHtml = `<div class="sign-badge verified">
+            <span class="badge-icon">🪧✅</span>
+            <span>עודכן לפי שלט בשטח — ${ovrDate}</span>
+        </div>`;
+    } else if (streetReports.length > 0) {
+        const pending = streetReports.filter(r => r.status === 'pending').length;
+        if (pending > 0) {
+            signBadgeHtml = `<div class="sign-badge not-verified">
+                <span class="badge-icon">🪧⏳</span>
+                <span>${pending} דיווח(ים) ממתינים לפענוח</span>
+            </div>`;
+        } else {
+            signBadgeHtml = `<div class="sign-badge not-verified">
+                <span class="badge-icon">🪧</span>
+                <span>לא אומת מול שלט בשטח</span>
+            </div>`;
+        }
+    } else {
+        signBadgeHtml = `<div class="sign-badge not-verified">
+            <span class="badge-icon">🪧</span>
+            <span>לא אומת מול שלט בשטח</span>
+        </div>`;
+    }
+
+    const featureId = a.OBJECTID || a.objectid || '';
+
     return `
         <div class="lane-popup">
             <h3>🚌 ${a.street_name || 'ללא שם'}</h3>
@@ -540,6 +597,8 @@ function createPopupContent(feature, status) {
                 <span class="popup-status ${statusClass}">${statusText}</span>
             </div>
             <div style="font-size: 10px; color: #999; margin-top: 6px; text-align: center;">${status.reason}</div>
+            ${signBadgeHtml}
+            <button class="popup-report-btn" onclick="openPhotoModalForStreet('${(a.street_name || '').replace(/'/g, "\\'")}')">🪧 דווח שלט מהשטח</button>
         </div>
     `;
 }
@@ -1149,6 +1208,12 @@ function setupDriveControls() {
     if (btnVoice) btnVoice.addEventListener('click', toggleVoice);
     if (btnDrive) btnDrive.addEventListener('click', toggleDrivingMode);
 
+    // Photo & Reports buttons
+    const btnPhoto = document.getElementById('btnPhoto');
+    const btnReports = document.getElementById('btnReports');
+    if (btnPhoto) btnPhoto.addEventListener('click', openPhotoModal);
+    if (btnReports) btnReports.addEventListener('click', toggleReportsPanel);
+
     // Stop auto-follow when user manually pans
     map.on('dragstart', () => {
         if (followMode) followMode = false;
@@ -1169,6 +1234,350 @@ function setupDriveControls() {
         window.speechSynthesis.getVoices();
         window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
+
+    // Setup photo modal events
+    setupPhotoModal();
+}
+
+// ============================================================
+// Photo Capture & Sign Report
+// ============================================================
+
+let pendingReportData = { photoData: null, lat: null, lng: null, gpsSource: null };
+
+function openPhotoModal() {
+    pendingReportData = { photoData: null, lat: null, lng: null, gpsSource: null };
+    document.getElementById('photoPreview').style.display = 'none';
+    document.getElementById('photoPreview').src = '';
+    document.getElementById('gpsStatus').innerHTML = '';
+    document.getElementById('reportStreet').value = '';
+    document.getElementById('reportSection').value = '';
+    document.getElementById('reportNotes').value = '';
+    document.getElementById('btnSubmitReport').disabled = true;
+    document.getElementById('photoModal').classList.add('show');
+}
+
+function openPhotoModalForStreet(streetName) {
+    openPhotoModal();
+    document.getElementById('reportStreet').value = streetName || '';
+    // Close any open popup
+    map.closePopup();
+}
+
+function closePhotoModal() {
+    document.getElementById('photoModal').classList.remove('show');
+}
+
+function setupPhotoModal() {
+    const modal = document.getElementById('photoModal');
+    const inputArea = document.getElementById('photoInputArea');
+    const fileInput = document.getElementById('photoFileInput');
+    const submitBtn = document.getElementById('btnSubmitReport');
+    const cancelBtn = document.getElementById('btnCancelReport');
+
+    if (!modal) return;
+
+    inputArea.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', handlePhotoSelected);
+    submitBtn.addEventListener('click', submitReport);
+    cancelBtn.addEventListener('click', closePhotoModal);
+
+    // Close on overlay click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closePhotoModal();
+    });
+}
+
+async function handlePhotoSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Show preview
+    const preview = document.getElementById('photoPreview');
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        preview.src = ev.target.result;
+        preview.style.display = 'block';
+        pendingReportData.photoData = ev.target.result;
+        document.getElementById('btnSubmitReport').disabled = false;
+    };
+    reader.readAsDataURL(file);
+
+    // Try to extract GPS from EXIF
+    const gpsStatusEl = document.getElementById('gpsStatus');
+    gpsStatusEl.innerHTML = '<div class="gps-badge not-found">⏳ מחלץ מיקום מהתמונה...</div>';
+
+    const gps = await extractExifGps(file);
+
+    if (gps && gps.lat && gps.lng) {
+        pendingReportData.lat = gps.lat;
+        pendingReportData.lng = gps.lng;
+        pendingReportData.gpsSource = 'exif';
+        gpsStatusEl.innerHTML = `<div class="gps-badge found">📍 מיקום מהתמונה: ${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}</div>`;
+
+        // Auto-detect nearest street
+        autoDetectStreet(gps.lat, gps.lng);
+    } else if (userLatLng) {
+        // Fall back to current GPS position
+        pendingReportData.lat = userLatLng.lat;
+        pendingReportData.lng = userLatLng.lng;
+        pendingReportData.gpsSource = 'device';
+        gpsStatusEl.innerHTML = `<div class="gps-badge manual">📍 מיקום מה-GPS: ${userLatLng.lat.toFixed(5)}, ${userLatLng.lng.toFixed(5)}</div>`;
+        autoDetectStreet(userLatLng.lat, userLatLng.lng);
+    } else {
+        pendingReportData.gpsSource = 'none';
+        gpsStatusEl.innerHTML = '<div class="gps-badge not-found">⚠️ לא נמצא מיקום GPS. הזן שם רחוב ידנית.</div>';
+    }
+}
+
+function autoDetectStreet(lat, lng) {
+    if (allFeatures.length === 0) return;
+    const pos = L.latLng(lat, lng);
+    let minDist = Infinity;
+    let closestStreet = '';
+    let closestSection = '';
+
+    for (const feature of allFeatures) {
+        if (!feature.geometry || !feature.geometry.paths) continue;
+        const dist = distanceToPolyline(pos, feature.geometry.paths);
+        if (dist < minDist) {
+            minDist = dist;
+            closestStreet = feature.attributes.street_name || '';
+            const from = feature.attributes.from_street || '';
+            const to = feature.attributes.to_street || '';
+            closestSection = from && to ? `${from} → ${to}` : '';
+        }
+    }
+
+    if (closestStreet && minDist < 200) {
+        const streetInput = document.getElementById('reportStreet');
+        const sectionInput = document.getElementById('reportSection');
+        if (!streetInput.value) streetInput.value = closestStreet;
+        if (!sectionInput.value && closestSection) sectionInput.value = closestSection;
+    }
+}
+
+function submitReport() {
+    const street = document.getElementById('reportStreet').value.trim();
+    const section = document.getElementById('reportSection').value.trim();
+    const notes = document.getElementById('reportNotes').value.trim();
+
+    if (!street) {
+        alert('נא להזין שם רחוב');
+        return;
+    }
+
+    if (!pendingReportData.photoData) {
+        alert('נא לצלם או לבחור תמונה');
+        return;
+    }
+
+    const report = {
+        street: street,
+        section: section,
+        notes: notes,
+        lat: pendingReportData.lat,
+        lng: pendingReportData.lng,
+        gpsSource: pendingReportData.gpsSource,
+        photoData: pendingReportData.photoData,
+        decodedHours: null,
+        featureId: null
+    };
+
+    addCommunityReport(report);
+    closePhotoModal();
+
+    showBanner(`🪧 דיווח שלט נשמר — ${street}`);
+    console.log('📋 New sign report:', street, report.lat, report.lng);
+
+    // Reset file input
+    document.getElementById('photoFileInput').value = '';
+}
+
+// ============================================================
+// Reports Panel
+// ============================================================
+
+function toggleReportsPanel() {
+    const panel = document.getElementById('reportsPanel');
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) {
+        renderReportsList();
+    }
+}
+
+function closeReportsPanel() {
+    document.getElementById('reportsPanel').classList.remove('open');
+}
+
+function renderReportsList() {
+    const container = document.getElementById('reportsList');
+    const reports = loadCommunityReports();
+
+    if (reports.length === 0) {
+        container.innerHTML = `
+            <div class="reports-empty">
+                <div class="empty-icon">🪧</div>
+                <div>אין דיווחי שלטים עדיין</div>
+                <div style="font-size: 13px; margin-top: 8px;">לחץ על 🪧 כדי לצלם שלט נת"צ</div>
+            </div>`;
+        return;
+    }
+
+    // Sort newest first
+    const sorted = [...reports].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    container.innerHTML = sorted.map(r => renderReportCard(r)).join('');
+
+    // Setup close button
+    const closeBtn = document.getElementById('btnCloseReports');
+    if (closeBtn) closeBtn.onclick = closeReportsPanel;
+}
+
+function renderReportCard(report) {
+    const date = new Date(report.timestamp).toLocaleString('he-IL', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+    });
+    const statusLabels = { pending: 'ממתין לפענוח', decoded: 'פוענח', rejected: 'נדחה' };
+    const statusLabel = statusLabels[report.status] || report.status;
+    const hasPhoto = report.photoData ? `<img class="report-card-photo" src="${report.photoData}" onclick="window.open(this.src)">` : '';
+    const gpsInfo = report.lat ? `📍 ${report.lat.toFixed(5)}, ${report.lng.toFixed(5)}` : 'ללא מיקום';
+
+    let decodedInfo = '';
+    if (report.status === 'decoded' && report.decodedHours) {
+        const h = report.decodedHours;
+        const parts = [];
+        if (h.allWeek) parts.push('כל השבוע 24/7');
+        if (h.sun_thu && h.sun_thu.length) parts.push(`א-ה: ${h.sun_thu.map(r => formatHour(r[0]) + '-' + formatHour(r[1])).join(', ')}`);
+        if (h.fri && h.fri.length) parts.push(`ו: ${h.fri.map(r => formatHour(r[0]) + '-' + formatHour(r[1])).join(', ')}`);
+        if (h.sat && h.sat.length) parts.push(`ש: ${h.sat.map(r => formatHour(r[0]) + '-' + formatHour(r[1])).join(', ')}`);
+        decodedInfo = `<div style="font-size: 12px; margin-top: 4px; padding: 4px 8px; background: #d4edda; border-radius: 6px;">🕐 ${parts.join(' | ')}</div>`;
+    }
+
+    return `
+        <div class="report-card" id="report-${report.id}">
+            <div class="report-card-header">
+                <span class="report-card-street">🪧 ${report.street}</span>
+                <span class="report-status-badge ${report.status}">${statusLabel}</span>
+            </div>
+            ${hasPhoto}
+            <div class="report-card-meta">${date} · ${gpsInfo}</div>
+            ${report.section ? `<div class="report-card-meta">קטע: ${report.section}</div>` : ''}
+            ${report.notes ? `<div class="report-card-meta">הערות: ${report.notes}</div>` : ''}
+            ${decodedInfo}
+            <div class="report-card-actions">
+                ${report.status === 'pending' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">🔍 פענח שעות</button>` : ''}
+                ${report.status === 'decoded' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">✏️ ערוך שעות</button>` : ''}
+                <button class="report-action-btn" onclick="zoomToReport('${report.id}')">🗺️ הצג במפה</button>
+                <button class="report-action-btn danger" onclick="deleteReport('${report.id}')">🗑️ מחק</button>
+            </div>
+            <div id="decode-form-${report.id}"></div>
+        </div>
+    `;
+}
+
+function showDecodeForm(reportId) {
+    const formContainer = document.getElementById(`decode-form-${reportId}`);
+    if (!formContainer) return;
+
+    const reports = loadCommunityReports();
+    const report = reports.find(r => r.id === reportId);
+    if (!report) return;
+
+    // Pre-fill from existing decoded hours
+    const h = report.decodedHours || {};
+    const sunThu = h.sun_thu ? h.sun_thu.map(r => `${formatHour(r[0])}-${formatHour(r[1])}`).join(', ') : '';
+    const fri = h.fri ? h.fri.map(r => `${formatHour(r[0])}-${formatHour(r[1])}`).join(', ') : '';
+    const sat = h.sat ? h.sat.map(r => `${formatHour(r[0])}-${formatHour(r[1])}`).join(', ') : '';
+    const allWeek = h.allWeek ? 'checked' : '';
+
+    formContainer.innerHTML = `
+        <div class="decode-form">
+            <div class="decode-help">הזן שעות הגבלה כפי שכתוב על השלט. פורמט: 07:00-22:00 (מופרד בפסיק אם יש כמה טווחים)</div>
+            <label><input type="checkbox" id="decode-allweek-${reportId}" ${allWeek}> כל ימות השבוע 24/7</label>
+            <label>א׳-ה׳:</label>
+            <input type="text" id="decode-sunth-${reportId}" value="${sunThu}" placeholder="07:00-22:00" dir="ltr">
+            <label>ו׳ / ערבי חג:</label>
+            <input type="text" id="decode-fri-${reportId}" value="${fri}" placeholder="07:00-17:00" dir="ltr">
+            <label>שבת / חג:</label>
+            <input type="text" id="decode-sat-${reportId}" value="${sat}" placeholder="" dir="ltr">
+            <div class="decode-actions">
+                <button class="report-action-btn primary" onclick="saveDecodeForm('${reportId}')">💾 שמור</button>
+                <button class="report-action-btn" onclick="cancelDecodeForm('${reportId}')">ביטול</button>
+            </div>
+        </div>
+    `;
+}
+
+function cancelDecodeForm(reportId) {
+    const el = document.getElementById(`decode-form-${reportId}`);
+    if (el) el.innerHTML = '';
+}
+
+function parseTimeRanges(str) {
+    if (!str || !str.trim()) return null;
+    const ranges = [];
+    const parts = str.split(',');
+    for (const part of parts) {
+        const match = part.trim().match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+        if (match) {
+            const start = parseInt(match[1]) + parseInt(match[2]) / 60;
+            const end = parseInt(match[3]) + parseInt(match[4]) / 60;
+            ranges.push([start, end]);
+        }
+    }
+    return ranges.length > 0 ? ranges : null;
+}
+
+function saveDecodeForm(reportId) {
+    const allWeek = document.getElementById(`decode-allweek-${reportId}`).checked;
+    const sunThuStr = document.getElementById(`decode-sunth-${reportId}`).value;
+    const friStr = document.getElementById(`decode-fri-${reportId}`).value;
+    const satStr = document.getElementById(`decode-sat-${reportId}`).value;
+
+    const decodedHours = {
+        allWeek: allWeek,
+        sun_thu: allWeek ? null : parseTimeRanges(sunThuStr),
+        fri: allWeek ? null : parseTimeRanges(friStr),
+        sat: allWeek ? null : parseTimeRanges(satStr)
+    };
+
+    updateCommunityReport(reportId, {
+        status: 'decoded',
+        decodedHours: decodedHours
+    });
+
+    // Re-render
+    renderReportsList();
+
+    // Re-render lanes to apply the override
+    if (allFeatures.length > 0) {
+        renderLanes(allFeatures, new Date());
+    }
+
+    showBanner('🪧✅ שעות השלט נשמרו — המפה עודכנה');
+}
+
+function deleteReport(reportId) {
+    if (!confirm('למחוק את הדיווח?')) return;
+    deleteCommunityReport(reportId);
+    renderReportsList();
+
+    // Re-render lanes
+    if (allFeatures.length > 0) {
+        renderLanes(allFeatures, new Date());
+    }
+}
+
+function zoomToReport(reportId) {
+    const reports = loadCommunityReports();
+    const report = reports.find(r => r.id === reportId);
+    if (!report || !report.lat || !report.lng) {
+        alert('אין מיקום GPS לדיווח זה');
+        return;
+    }
+    map.setView([report.lat, report.lng], 18);
+    closeReportsPanel();
 }
 
 // ============================================================

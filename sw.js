@@ -1,9 +1,10 @@
-const CACHE_NAME = 'buslanes-v4';
+const CACHE_NAME = 'buslanes-v5';
 const STATIC_ASSETS = [
     '/',
     '/index.html',
     '/app.js',
     '/bus_lane_hours.js',
+    '/community_reports.js',
     '/manifest.json',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
