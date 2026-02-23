@@ -2529,12 +2529,12 @@ async function init() {
             renderLanes(allFeatures, new Date());
         }).catch(e => console.warn('Initial sync failed:', e));
 
-        // Periodic sync every 5 minutes
+        // Periodic sync every 3 minutes
         setInterval(() => {
             syncReports().then(() => {
                 renderLanes(allFeatures, new Date());
             }).catch(() => {});
-        }, 5 * 60 * 1000);
+        }, 3 * 60 * 1000);
 
         console.log(`✅ Loaded ${allFeatures.length} bus lanes + ${allCameras.length} cameras. Day type: ${getDayType(now)}, Hour: ${getCurrentDecimalHour(now).toFixed(2)}`);
     } catch (error) {
