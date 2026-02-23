@@ -551,18 +551,11 @@
         <button class="drive-btn" id="btnReports" title="דיווחי שלטים">📋</button>
     </div>
 
-    <!-- Photo Capture Modal -->
+    <!-- Sign Report Modal -->
     <div class="modal-overlay" id="photoModal">
         <div class="modal-box">
             <h2>🪧 דיווח שלט נת"צ</h2>
-            <p style="font-size: 13px; color: #666; margin-bottom: 12px;">צלם את השלט של שעות הנת"צ. המיקום יזוהה אוטומטית מהתמונה.</p>
-            <div class="photo-input-area" id="photoInputArea">
-                <div class="photo-icon">🪧</div>
-                <p>לחץ לצילום או בחירת תמונה</p>
-                <input type="file" accept="image/*" capture="environment" id="photoFileInput" style="display:none">
-            </div>
-            <img class="photo-preview" id="photoPreview">
-            <div id="gpsStatus"></div>
+            <p style="font-size: 13px; color: #666; margin-bottom: 12px;">בחר רחוב וקטעים, ואם יש לך — צרף תמונה של השלט.</p>
             <div class="form-group">
                 <label>שם רחוב</label>
                 <input type="text" id="reportStreet" placeholder="יזוהה אוטומטית לפי מיקום...">
@@ -575,7 +568,17 @@
                 <label>הערות</label>
                 <textarea id="reportNotes" placeholder="תיאור חופשי של מה שכתוב על השלט..."></textarea>
             </div>
-            <button class="btn-submit-report" id="btnSubmitReport" disabled>שלח דיווח</button>
+            <div class="form-group">
+                <label>📷 צרף תמונת שלט (אופציונלי)</label>
+                <div class="photo-input-area" id="photoInputArea" style="padding: 12px;">
+                    <div class="photo-icon" style="font-size: 28px;">📷</div>
+                    <p style="margin: 4px 0 0; font-size: 13px;">לחץ לצילום או בחירת תמונה</p>
+                    <input type="file" accept="image/*" capture="environment" id="photoFileInput" style="display:none">
+                </div>
+                <img class="photo-preview" id="photoPreview">
+                <div id="gpsStatus"></div>
+            </div>
+            <button class="btn-submit-report" id="btnSubmitReport">שלח דיווח</button>
             <button style="width:100%; padding:10px; margin-top:8px; background:none; border:1px solid #ddd; border-radius:10px; font-size:14px; cursor:pointer;" id="btnCancelReport">ביטול</button>
         </div>
     </div>

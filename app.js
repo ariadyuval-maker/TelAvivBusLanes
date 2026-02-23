@@ -1280,7 +1280,6 @@ function openPhotoModal() {
     document.getElementById('gpsStatus').innerHTML = '';
     document.getElementById('reportStreet').value = '';
     document.getElementById('reportNotes').value = '';
-    document.getElementById('btnSubmitReport').disabled = true;
     clearSegmentPicker();
     document.getElementById('photoModal').classList.add('show');
 }
@@ -1336,8 +1335,6 @@ async function handlePhotoSelected(e) {
         pendingReportData.photoData = compressed;
         pendingReportData.photoFull = null; // don't store full-res
         console.log(`📷 Photo compressed: ${(fullData.length/1024).toFixed(0)}KB → ${(compressed.length/1024).toFixed(0)}KB`);
-
-        document.getElementById('btnSubmitReport').disabled = false;
     };
     reader.readAsDataURL(file);
 
@@ -1536,11 +1533,6 @@ function submitReport() {
         return;
     }
 
-    if (!pendingReportData.photoData) {
-        alert('נא לצלם או לבחור תמונה');
-        return;
-    }
-
     // Build section description from selected segments
     const segments = getSegmentsForStreet(street);
     const selectedSegments = segments.filter(s => selectedOids.includes(s.oid));
@@ -1553,7 +1545,7 @@ function submitReport() {
         lat: pendingReportData.lat,
         lng: pendingReportData.lng,
         gpsSource: pendingReportData.gpsSource,
-        photoData: pendingReportData.photoData,
+        photoData: pendingReportData.photoData || null,
         decodedHours: null,
         featureIds: selectedOids.length > 0 ? selectedOids : null
     };
