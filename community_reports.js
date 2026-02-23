@@ -364,8 +364,8 @@ function _updateSyncUI(state) {
 // Sign Overrides Index
 // ============================================================
 
-let SIGN_OVERRIDES = {};
-let SIGN_OVERRIDES_BY_OID = {};
+var SIGN_OVERRIDES = {};
+var SIGN_OVERRIDES_BY_OID = {};
 
 function rebuildSignOverrides() {
     SIGN_OVERRIDES = {};
