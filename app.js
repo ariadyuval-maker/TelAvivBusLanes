@@ -1707,11 +1707,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function setupDriveControls() {
-    const btnGps = document.getElementById('btnGps');
     const btnVoice = document.getElementById('btnVoice');
     const btnDrive = document.getElementById('btnDrive');
 
-    if (btnGps) btnGps.addEventListener('click', toggleGps);
     if (btnVoice) btnVoice.addEventListener('click', toggleVoice);
     if (btnDrive) btnDrive.addEventListener('click', toggleDrivingMode);
 
@@ -1726,15 +1724,13 @@ function setupDriveControls() {
         if (followMode) followMode = false;
     });
 
-    // Double-tap GPS button to re-center
-    if (btnGps) {
-        btnGps.addEventListener('dblclick', () => {
-            if (gpsActive && userLatLng) {
-                followMode = true;
-                map.setView(userLatLng, 17);
-            }
-        });
-    }
+    // Double-tap on map to re-center on user location
+    map.on('dblclick', (e) => {
+        if (gpsActive && userLatLng) {
+            followMode = true;
+            map.setView(userLatLng, 17);
+        }
+    });
 
     // Preload voices
     if ('speechSynthesis' in window) {
@@ -2520,6 +2516,9 @@ async function init() {
 
         // Hide loading overlay
         document.getElementById('loadingOverlay').classList.add('hidden');
+
+        // Auto-start GPS (blue dot always visible)
+        startGps();
 
         // Start periodic refresh
         startStatusRefresh();
