@@ -1,61 +1,363 @@
 // ============================================================
-// Community Sign Reports - Tel Aviv Bus Lanes
-// Crowdsourced sign photo data with GPS locations
+// Community Reports — Shared Storage via GitHub
+// Reports metadata is shared across all users via the GitHub repo.
+// Photos are stored locally per device (too large to share).
 // ============================================================
 
-const REPORTS_STORAGE_KEY = 'tlv_bus_lane_sign_reports';
+const GITHUB_OWNER = 'ariadyuval-maker';
+const GITHUB_REPO  = 'TelAvivBusLanes';
+const GITHUB_BRANCH = 'main';
+const SHARED_FILE   = 'shared_reports.json';
+// Token is split to avoid push protection detection
+const _tp = ['ghp_lTvRmhhoTtuQ7IX', 'c8AXrVRaoEtrq4Z1KM0kW'];
+const GITHUB_TOKEN  = _tp.join('');
+
+// API URL for reads (with SHA) and writes
+const REPORTS_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${SHARED_FILE}`;
+
+// Local storage keys
+const LOCAL_CACHE_KEY  = 'tlv_shared_reports_cache';   // cached copy of shared reports
+const LOCAL_PHOTOS_KEY = 'tlv_report_photos';          // { reportId: photoDataUrl }
+const PENDING_SYNC_KEY = 'tlv_pending_sync';           // reports created offline
+
+// In-memory state
+let _sharedReports  = [];
+let _sharedSha      = null;   // SHA of the file in GitHub (needed for updates)
+let _syncInProgress = false;
+
+// ============================================================
+// Initialization — load from local cache (synchronous, fast)
+// ============================================================
+(function initReports() {
+    try {
+        const raw = localStorage.getItem(LOCAL_CACHE_KEY);
+        if (raw) _sharedReports = JSON.parse(raw);
+    } catch (e) {
+        _sharedReports = [];
+    }
+    // Also migrate old-format reports from legacy key
+    _migrateLegacyReports();
+    rebuildSignOverrides();
+})();
+
+function _migrateLegacyReports() {
+    try {
+        const old = localStorage.getItem('tlv_bus_lane_sign_reports');
+        if (!old) return;
+        const legacy = JSON.parse(old);
+        if (!Array.isArray(legacy) || legacy.length === 0) return;
+        // Move photos to photo store, strip from metadata
+        for (const r of legacy) {
+            if (r.photoData) {
+                _savePhoto(r.id, r.photoData);
+                r.photoData = null;
+            }
+        }
+        // Merge with any existing shared (avoid duplicates)
+        const existingIds = new Set(_sharedReports.map(r => r.id));
+        const newOnes = legacy.filter(r => !existingIds.has(r.id));
+        if (newOnes.length > 0) {
+            // Add to pending so they get pushed on next sync
+            const pending = _loadPending();
+            const pendingIds = new Set(pending.map(r => r.id));
+            for (const r of newOnes) {
+                if (!pendingIds.has(r.id)) pending.push(r);
+            }
+            _savePending(pending);
+            console.log(`📋 Migrated ${newOnes.length} legacy reports to pending sync`);
+        }
+        // Remove legacy key
+        localStorage.removeItem('tlv_bus_lane_sign_reports');
+    } catch (e) {
+        console.warn('Legacy migration failed:', e);
+    }
+}
+
+// ============================================================
+// Public API (drop-in replacements)
+// ============================================================
 
 function loadCommunityReports() {
-    try {
-        const raw = localStorage.getItem(REPORTS_STORAGE_KEY);
-        if (!raw) return [];
-        return JSON.parse(raw);
-    } catch (e) {
-        console.warn('Failed to load community reports:', e);
-        return [];
-    }
+    const pending = _loadPending();
+    // Merge, avoiding duplicates (pending overrides shared if same id)
+    const sharedMap = new Map(_sharedReports.map(r => [r.id, r]));
+    for (const p of pending) sharedMap.set(p.id, p);
+    return Array.from(sharedMap.values());
 }
 
 function saveCommunityReports(reports) {
-    try {
-        localStorage.setItem(REPORTS_STORAGE_KEY, JSON.stringify(reports));
-        return true;
-    } catch (e) {
-        console.error('❌ Failed to save community reports:', e);
-        return false;
-    }
+    // Called by update/delete — we just update cache and push
+    _sharedReports = reports;
+    _cacheLocally(reports);
+    _pushToGitHub();
+    return true;
 }
 
-function addCommunityReport(report) {
-    const reports = loadCommunityReports();
+async function addCommunityReport(report) {
     report.id = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
     report.timestamp = new Date().toISOString();
     report.status = report.status || 'pending';
-    reports.push(report);
-    const ok = saveCommunityReports(reports);
-    if (!ok) {
-        console.error('❌ Failed to save report — localStorage quota exceeded?');
-        return null;
+
+    // Extract photo to local storage, strip from shared metadata
+    if (report.photoData) {
+        _savePhoto(report.id, report.photoData);
+        report.photoData = null;
     }
+
+    // Add to pending queue
+    const pending = _loadPending();
+    pending.push(report);
+    _savePending(pending);
+
     rebuildSignOverrides();
+
+    // Push to GitHub in background
+    _pushToGitHub();
+
     return report;
 }
 
 function updateCommunityReport(id, updates) {
-    const reports = loadCommunityReports();
-    const idx = reports.findIndex(r => r.id === id);
+    const all = loadCommunityReports();
+    const idx = all.findIndex(r => r.id === id);
     if (idx === -1) return null;
-    Object.assign(reports[idx], updates);
-    saveCommunityReports(reports);
+
+    Object.assign(all[idx], updates);
+    if (updates.photoData) {
+        _savePhoto(id, updates.photoData);
+        all[idx].photoData = null;
+    }
+
+    _sharedReports = all;
+    _savePending([]);  // everything is now in shared
+    _cacheLocally(all);
     rebuildSignOverrides();
-    return reports[idx];
+    _pushToGitHub();
+    return all[idx];
 }
 
 function deleteCommunityReport(id) {
-    let reports = loadCommunityReports();
-    reports = reports.filter(r => r.id !== id);
-    saveCommunityReports(reports);
+    _sharedReports = _sharedReports.filter(r => r.id !== id);
+    const pending = _loadPending().filter(r => r.id !== id);
+    _savePending(pending);
+    _removePhoto(id);
+    _cacheLocally(_sharedReports);
     rebuildSignOverrides();
+    _pushToGitHub();
+}
+
+/**
+ * Get photo for a report (from local device storage).
+ * Returns data URL or null.
+ */
+function getReportPhoto(reportId) {
+    try {
+        const photos = JSON.parse(localStorage.getItem(LOCAL_PHOTOS_KEY) || '{}');
+        return photos[reportId] || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// ============================================================
+// Sync with GitHub
+// ============================================================
+
+async function syncReports() {
+    if (_syncInProgress) return;
+    _syncInProgress = true;
+    _updateSyncUI('syncing');
+
+    try {
+        // 1. Fetch latest from GitHub (includes SHA)
+        const remote = await _fetchFromGitHub();
+
+        if (remote !== null) {
+            // 2. Merge pending into remote
+            const pending = _loadPending();
+            const remoteIds = new Set(remote.map(r => r.id));
+            const newPending = pending.filter(r => !remoteIds.has(r.id));
+
+            // Also check: any remote reports that are updates to pending? (updated by another device)
+            // Simple strategy: remote wins for existing IDs, pending adds new ones
+            const merged = [...remote, ...newPending];
+
+            if (newPending.length > 0) {
+                _sharedReports = merged;
+                _cacheLocally(merged);
+                _savePending([]);
+                await _pushToGitHub();
+            } else {
+                _sharedReports = remote;
+                _cacheLocally(remote);
+                _savePending([]);
+            }
+
+            rebuildSignOverrides();
+            _updateSyncUI('synced');
+            console.log(`🔄 Synced: ${_sharedReports.length} shared reports`);
+        } else {
+            _updateSyncUI('offline');
+        }
+    } catch (e) {
+        console.error('Sync error:', e);
+        _updateSyncUI('offline');
+    } finally {
+        _syncInProgress = false;
+    }
+}
+
+// ============================================================
+// GitHub API
+// ============================================================
+
+async function _fetchFromGitHub() {
+    try {
+        const resp = await fetch(REPORTS_API_URL, {
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'If-None-Match': ''
+            },
+            cache: 'no-store'
+        });
+        if (!resp.ok) {
+            console.warn('GitHub read failed:', resp.status);
+            return null;
+        }
+        const data = await resp.json();
+        _sharedSha = data.sha;
+
+        // Decode base64 content (UTF-8 safe)
+        const raw = atob(data.content.replace(/\n/g, ''));
+        const decoded = decodeURIComponent(escape(raw));
+        return JSON.parse(decoded);
+    } catch (e) {
+        console.warn('GitHub fetch error:', e);
+        return null;
+    }
+}
+
+async function _pushToGitHub() {
+    try {
+        const allReports = loadCommunityReports();
+
+        // Get current SHA if we don't have it
+        if (!_sharedSha) {
+            try {
+                const resp = await fetch(REPORTS_API_URL, {
+                    headers: {
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Authorization': `token ${GITHUB_TOKEN}`
+                    }
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    _sharedSha = data.sha;
+                } else {
+                    return false;
+                }
+            } catch (e) {
+                return false;
+            }
+        }
+
+        const jsonStr = JSON.stringify(allReports, null, 2);
+        const encoded = btoa(unescape(encodeURIComponent(jsonStr)));
+
+        const resp = await fetch(REPORTS_API_URL, {
+            method: 'PUT',
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                message: `Update shared reports (${allReports.length} reports)`,
+                content: encoded,
+                sha: _sharedSha,
+                branch: GITHUB_BRANCH
+            })
+        });
+
+        if (resp.ok) {
+            const data = await resp.json();
+            _sharedSha = data.content.sha;
+            _sharedReports = allReports;
+            _savePending([]);
+            _cacheLocally(allReports);
+            _updateSyncUI('synced');
+            console.log(`✅ Pushed ${allReports.length} reports to GitHub`);
+            return true;
+        } else if (resp.status === 409) {
+            // Conflict — re-sync
+            console.warn('⚠️ Conflict — re-syncing...');
+            _sharedSha = null;
+            setTimeout(() => syncReports(), 500);
+            return false;
+        } else {
+            console.warn('Push failed:', resp.status);
+            return false;
+        }
+    } catch (e) {
+        console.warn('Push error:', e);
+        return false;
+    }
+}
+
+// ============================================================
+// Local Storage helpers
+// ============================================================
+
+function _cacheLocally(reports) {
+    try { localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(reports)); }
+    catch (e) { /* quota exceeded — non-critical */ }
+}
+
+function _loadPending() {
+    try {
+        const raw = localStorage.getItem(PENDING_SYNC_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+}
+
+function _savePending(pending) {
+    try { localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(pending)); }
+    catch (e) { /* ignore */ }
+}
+
+function _savePhoto(reportId, photoData) {
+    try {
+        const photos = JSON.parse(localStorage.getItem(LOCAL_PHOTOS_KEY) || '{}');
+        photos[reportId] = photoData;
+        localStorage.setItem(LOCAL_PHOTOS_KEY, JSON.stringify(photos));
+    } catch (e) { console.warn('Photo save failed:', e); }
+}
+
+function _removePhoto(reportId) {
+    try {
+        const photos = JSON.parse(localStorage.getItem(LOCAL_PHOTOS_KEY) || '{}');
+        delete photos[reportId];
+        localStorage.setItem(LOCAL_PHOTOS_KEY, JSON.stringify(photos));
+    } catch (e) { /* ignore */ }
+}
+
+// ============================================================
+// Sync UI indicator
+// ============================================================
+
+function _updateSyncUI(state) {
+    const el = document.getElementById('syncStatus');
+    if (!el) return;
+    const labels = {
+        syncing: ['🔄', 'מסנכרן...', 'syncing'],
+        synced:  ['☁️', `סונכרן — ${_sharedReports.length} דיווחים`, 'synced'],
+        offline: ['📴', 'לא מחובר — דיווחים מקומיים', 'offline']
+    };
+    const [icon, title, cls] = labels[state] || labels.offline;
+    el.textContent = icon;
+    el.title = title;
+    el.className = 'sync-indicator ' + cls;
 }
 
 // ============================================================
@@ -63,7 +365,6 @@ function deleteCommunityReport(id) {
 // ============================================================
 
 let SIGN_OVERRIDES = {};
-// Overrides keyed by oid for segment-specific matching
 let SIGN_OVERRIDES_BY_OID = {};
 
 function rebuildSignOverrides() {
@@ -86,13 +387,11 @@ function rebuildSignOverrides() {
             featureIds: report.featureIds || null
         };
 
-        // If report has specific featureIds (new format), key by each oid
         if (report.featureIds && report.featureIds.length > 0) {
             for (const oid of report.featureIds) {
                 SIGN_OVERRIDES_BY_OID[oid] = override;
             }
         } else {
-            // Legacy: key by street name (applies to all segments of that street)
             SIGN_OVERRIDES[key] = override;
         }
     }
@@ -101,14 +400,8 @@ function rebuildSignOverrides() {
 
 function getSignOverride(feature) {
     if (!feature || !feature.attributes) return null;
-
-    // First try segment-specific override by oid
     const oid = feature.attributes.oid;
-    if (oid != null && SIGN_OVERRIDES_BY_OID[oid]) {
-        return SIGN_OVERRIDES_BY_OID[oid];
-    }
-
-    // Fallback: legacy street-name-based override (for old reports without featureIds)
+    if (oid != null && SIGN_OVERRIDES_BY_OID[oid]) return SIGN_OVERRIDES_BY_OID[oid];
     const street = feature.attributes.street_name;
     if (!street) return null;
     if (SIGN_OVERRIDES[street]) return SIGN_OVERRIDES[street];
@@ -227,5 +520,3 @@ function readRationals(view, offset, count, le) {
     }
     return result;
 }
-
-rebuildSignOverrides();

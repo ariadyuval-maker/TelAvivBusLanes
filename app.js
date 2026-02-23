@@ -2031,7 +2031,7 @@ function getSelectedSegmentOids() {
     return Array.from(checkboxes).map(cb => parseInt(cb.value));
 }
 
-function submitReport() {
+async function submitReport() {
     const street = document.getElementById('reportStreet').value.trim();
     const notes = document.getElementById('reportNotes').value.trim();
     const selectedOids = getSelectedSegmentOids();
@@ -2059,7 +2059,7 @@ function submitReport() {
     };
 
     console.log('📋 submitReport: photoData size =', (report.photoData || '').length, 'bytes');
-    const saved = addCommunityReport(report);
+    const saved = await addCommunityReport(report);
     console.log('📋 submitReport: addCommunityReport returned:', saved);
     if (!saved) {
         alert('שגיאה בשמירת הדיווח. ייתכן שהזיכרון מלא — נסה למחוק דיווחים ישנים.');
@@ -2172,7 +2172,7 @@ async function handleCameraPhotoSelected(e) {
     }
 }
 
-function submitCameraReport() {
+async function submitCameraReport() {
     const notes = document.getElementById('camReportNotes').value.trim();
     const camId = pendingCameraReportData.camObjectId;
 
@@ -2200,7 +2200,7 @@ function submitCameraReport() {
         featureIds: null
     };
 
-    const saved = addCommunityReport(report);
+    const saved = await addCommunityReport(report);
     if (!saved) {
         alert('שגיאה בשמירת הדיווח. ייתכן שהזיכרון מלא — נסה למחוק דיווחים ישנים.');
         return;
@@ -2261,7 +2261,8 @@ function renderReportCard(report) {
 
     const statusLabels = { pending: 'ממתין לפענוח', decoded: 'פוענח', rejected: 'נדחה' };
     const statusLabel = statusLabels[report.status] || report.status;
-    const hasPhoto = report.photoData ? `<img class="report-card-photo" src="${report.photoData}" onclick="window.open(this.src)">` : '';
+    const photoUrl = getReportPhoto(report.id);
+    const hasPhoto = photoUrl ? `<img class="report-card-photo" src="${photoUrl}" onclick="window.open(this.src)">` : '';
     const gpsInfo = report.lat ? `📍 ${report.lat.toFixed(5)}, ${report.lng.toFixed(5)}` : 'ללא מיקום';
 
     let decodedInfo = '';
@@ -2518,6 +2519,19 @@ async function init() {
 
         // Start periodic refresh
         startStatusRefresh();
+
+        // Sync shared reports from GitHub
+        syncReports().then(() => {
+            // Re-render lanes after sync (sign overrides may have changed)
+            renderLanes(allFeatures, new Date());
+        }).catch(e => console.warn('Initial sync failed:', e));
+
+        // Periodic sync every 5 minutes
+        setInterval(() => {
+            syncReports().then(() => {
+                renderLanes(allFeatures, new Date());
+            }).catch(() => {});
+        }, 5 * 60 * 1000);
 
         console.log(`✅ Loaded ${allFeatures.length} bus lanes + ${allCameras.length} cameras. Day type: ${getDayType(now)}, Hour: ${getCurrentDecimalHour(now).toFixed(2)}`);
     } catch (error) {

@@ -358,6 +358,22 @@
         body.driving-mode .info-bar { display: none; }
         body.driving-mode .drive-controls { bottom: 40px; }
 
+        .sync-indicator {
+            cursor: pointer;
+            font-size: 16px;
+            opacity: 0.7;
+            transition: opacity 0.3s;
+            margin-right: 4px;
+        }
+        .sync-indicator:hover { opacity: 1; }
+        .sync-indicator.syncing { animation: spin-sync 1s linear infinite; }
+        .sync-indicator.synced { opacity: 0.9; }
+        .sync-indicator.offline { opacity: 0.5; }
+        @keyframes spin-sync {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
         @media (max-width: 768px) {
             .drive-btn {
                 width: 48px;
@@ -563,6 +579,7 @@
         <button class="drive-btn" id="btnVoice" title="התראות קוליות">🔇</button>
         <button class="drive-btn" id="btnDrive" title="מצב נהיגה">🚗</button>
         <button class="drive-btn" id="btnReports" title="דיווחי שלטים">📋</button>
+        <span id="syncStatus" class="sync-indicator" title="סנכרון" onclick="syncReports().then(()=>renderLanes(allFeatures,new Date()))">☁️</span>
     </div>
 
     <!-- Sign Report Modal -->
@@ -631,8 +648,8 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="bus_lane_hours.js?v=9"></script>
-    <script src="community_reports.js?v=9"></script>
-    <script src="app.js?v=9"></script>
+    <script src="bus_lane_hours.js?v=10"></script>
+    <script src="community_reports.js?v=10"></script>
+    <script src="app.js?v=10"></script>
 </body>
 </html>
