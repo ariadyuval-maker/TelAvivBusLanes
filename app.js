@@ -693,6 +693,41 @@ function createCameraPopupContent(feature) {
     };
     const sugText = sugMap[a.sug] || a.sug || 'לא צוין';
 
+    // Segment assignment info from precomputed index
+    const mapping = cameraSegmentMap[a.OBJECTID];
+    let segmentInfo = '';
+    if (mapping && mapping.segments.length > 0) {
+        const segDescs = mapping.segments.map(seg => {
+            const sa = seg.attributes;
+            const dirMap = { N: '↑צפון', NE: '↗צפ-מזרח', E: '→מזרח', SE: '↘דרום-מזרח', S: '↓דרום', SW: '↙דרום-מערב', W: '←מערב', NW: '↖צפ-מערב' };
+            const dirText = dirMap[sa.direction_name] || 'דו-כיווני';
+            const from = sa.from_street || '?';
+            const to = sa.to_street || '?';
+            return `${from} → ${to} (${dirText})`;
+        }).join('<br>');
+
+        const badge = mapping.bidirectional
+            ? '<span style="background:#f39c12;color:#fff;padding:2px 6px;border-radius:8px;font-size:11px;">↔ דו-כיוונית</span>'
+            : '<span style="background:#27ae60;color:#fff;padding:2px 6px;border-radius:8px;font-size:11px;">✓ מסווגת</span>';
+
+        segmentInfo = `
+            <div class="popup-row">
+                <span class="popup-label">מקטע נת"צ:</span>
+                <span class="popup-value">${badge}<br><span style="font-size:12px;">${segDescs}</span></span>
+            </div>`;
+    } else {
+        segmentInfo = `
+            <div class="popup-row">
+                <span class="popup-label">מקטע נת"צ:</span>
+                <span class="popup-value"><span style="color:#999;font-size:12px;">לא שויכה לנתיב</span></span>
+            </div>`;
+    }
+
+    // Report button for bidirectional cameras
+    const reportBtn = (mapping && mapping.bidirectional)
+        ? `<button class="popup-report-btn" onclick="openCameraReportModal(${a.OBJECTID})">📷 דווח כיוון מצלמה</button>`
+        : '';
+
     return `
         <div class="lane-popup">
             <h3>📷 מצלמת נת"צ</h3>
@@ -720,6 +755,8 @@ function createCameraPopupContent(feature) {
                 <span class="popup-label">סטטוס:</span>
                 <span class="popup-value">${statusText}</span>
             </div>
+            ${segmentInfo}
+            ${reportBtn}
         </div>
     `;
 }
@@ -805,6 +842,183 @@ function setupCameraToggle() {
             }
         });
     }
+}
+
+// ============================================================
+// Camera → Segment Offline Mapping
+// ============================================================
+
+/**
+ * Precomputed map: camera OBJECTID → { segments: [feature, …], bidirectional: bool }
+ * Built once after both bus lanes and cameras are loaded.
+ */
+let cameraSegmentMap = {};  // camOBJECTID → { segments: [feature…], bidirectional: bool }
+
+/**
+ * Build offline index mapping each camera to its bus-lane segment(s).
+ *
+ * Algorithm per camera:
+ *  1. Match camera street (t_rechov1) to bus-lane street_name
+ *     (using normalizeStreet + STREET_ALIASES).
+ *  2. Find all segments of that street within 60 m of the camera.
+ *  3a. If only one-way segments found → assign to the closest one.
+ *  3b. If two opposing-direction segments found AND camera has a
+ *      house number (ms_bayit1) → pick the side whose polyline is
+ *      closer to the "house-number side" of the street
+ *      (even → left side of ascending direction, odd → right side).
+ *  3c. If no house number AND the two segments are < 10 m apart at
+ *      the camera location → assign camera to BOTH (bidirectional).
+ *  4. Cameras with no street match are left unmapped.
+ */
+function buildCameraSegmentIndex() {
+    cameraSegmentMap = {};
+    if (allFeatures.length === 0 || allCameras.length === 0) return;
+
+    // Pre-group bus-lane features by normalised street name
+    const lanesByStreet = {};
+    for (const f of allFeatures) {
+        const sn = f.attributes.street_name;
+        if (!sn) continue;
+        const norm = normalizeStreet(sn);
+        const aliased = STREET_ALIASES[norm] || norm;
+        lanesByStreet[norm] = lanesByStreet[norm] || [];
+        lanesByStreet[norm].push(f);
+        if (aliased !== norm) {
+            lanesByStreet[aliased] = lanesByStreet[aliased] || [];
+            lanesByStreet[aliased].push(f);
+        }
+    }
+
+    const CAM_SNAP_RADIUS = 60;  // metres
+
+    for (const cam of allCameras) {
+        const a = cam.attributes;
+        const g = cam.geometry;
+        if (!g || g.x === undefined || g.y === undefined) continue;
+
+        const camPos = L.latLng(g.y, g.x);
+        const camStreet = normalizeStreet(a.t_rechov1 || '');
+        if (!camStreet) continue;
+
+        // Find matching bus-lane street (direct or via alias)
+        const aliased = STREET_ALIASES[camStreet] || camStreet;
+        let candidates = lanesByStreet[camStreet] || lanesByStreet[aliased] || [];
+
+        // Also try reverse alias lookup
+        if (candidates.length === 0) {
+            for (const [gisName, schedName] of Object.entries(STREET_ALIASES)) {
+                if (schedName === camStreet || schedName === aliased) {
+                    candidates = lanesByStreet[gisName] || [];
+                    if (candidates.length > 0) break;
+                }
+            }
+        }
+
+        if (candidates.length === 0) continue;
+
+        // Find segments within snap radius, sorted by distance
+        const nearby = [];
+        for (const f of candidates) {
+            if (!f.geometry || !f.geometry.paths) continue;
+            const dist = distanceToPolyline(camPos, f.geometry.paths);
+            if (dist < CAM_SNAP_RADIUS) {
+                nearby.push({ feature: f, dist });
+            }
+        }
+        if (nearby.length === 0) continue;
+        nearby.sort((a, b) => a.dist - b.dist);
+
+        // Classify: how many distinct directions?
+        const dirGroups = {};  // direction → [{ feature, dist }]
+        for (const n of nearby) {
+            const dir = n.feature.attributes.direction_name || 'none';
+            dirGroups[dir] = dirGroups[dir] || [];
+            dirGroups[dir].push(n);
+        }
+        const distinctDirs = Object.keys(dirGroups).filter(d => d !== 'none');
+
+        let assignedSegments = [];
+        let bidirectional = false;
+
+        if (nearby.length === 1 || distinctDirs.length <= 1) {
+            // Single segment or all same direction → assign closest
+            assignedSegments = [nearby[0].feature];
+        } else if (distinctDirs.length >= 2) {
+            // Two or more opposing directions
+            const houseNum = parseInt(a.ms_bayit1);
+
+            if (houseNum > 0) {
+                // Use house number to pick side.
+                // Concept: for a N-bound segment, even numbers are on the west (left)
+                // and odd on the east (right) — or vice-versa depending on the city.
+                // We use a geometric approach: offset the camera position slightly
+                // perpendicular to each segment and see which is closer.
+                const isEven = houseNum % 2 === 0;
+
+                // Pick the two closest segments from different directions
+                const seg1 = nearby[0];
+                let seg2 = nearby.find(n =>
+                    (n.feature.attributes.direction_name || 'none') !==
+                    (seg1.feature.attributes.direction_name || 'none')
+                );
+
+                if (seg2) {
+                    // The camera is physically closer to one side — the house number
+                    // tells us which side it's mounted on. Use the closest segment
+                    // that matches the camera's physical position.
+                    // Simpler heuristic: even house numbers → pick westernmost/southernmost
+                    // segment, odd → easternmost/northernmost. But since the camera
+                    // position IS on one side, just pick the nearest segment.
+                    // The house number mainly confirms the side, so nearest is correct.
+                    if (Math.abs(seg1.dist - seg2.dist) < 3) {
+                        // Too close to tell — use house number parity
+                        // In Tel Aviv convention: even numbers on ascending side
+                        const dir1 = seg1.feature.attributes.direction_name || '';
+                        const ascendingDirs = ['N', 'NE', 'E'];
+                        const isDir1Ascending = ascendingDirs.includes(dir1);
+                        if (isEven === isDir1Ascending) {
+                            assignedSegments = [seg1.feature];
+                        } else {
+                            assignedSegments = [seg2.feature];
+                        }
+                    } else {
+                        // Clear distance difference — nearest segment is the correct side
+                        assignedSegments = [seg1.feature];
+                    }
+                } else {
+                    assignedSegments = [seg1.feature];
+                }
+            } else {
+                // No house number — check distance between opposing segments
+                const seg1 = nearby[0];
+                const seg2 = nearby.find(n =>
+                    (n.feature.attributes.direction_name || 'none') !==
+                    (seg1.feature.attributes.direction_name || 'none')
+                );
+
+                if (seg2 && Math.abs(seg1.dist - seg2.dist) < 10) {
+                    // Less than 10m apart — assign to both (bidirectional)
+                    assignedSegments = [seg1.feature, seg2.feature];
+                    bidirectional = true;
+                } else {
+                    // One is clearly closer
+                    assignedSegments = [seg1.feature];
+                }
+            }
+        }
+
+        if (assignedSegments.length > 0) {
+            cameraSegmentMap[a.OBJECTID] = {
+                segments: assignedSegments,
+                bidirectional: bidirectional
+            };
+        }
+    }
+
+    // Log stats
+    const mapped = Object.keys(cameraSegmentMap).length;
+    const bidir = Object.values(cameraSegmentMap).filter(v => v.bidirectional).length;
+    console.log(`📷 Camera-segment index: ${mapped} mapped (${bidir} bidirectional), ${allCameras.length - mapped} unmapped`);
 }
 
 // ============================================================
@@ -1199,10 +1413,11 @@ function checkDrivingAlerts(userPos) {
     // ---- Alert 2: bus-lane camera on current or next segment ----
     if (allCameras.length === 0) return;
 
-    // Collect candidate segments: current + next in driving direction
-    const candidateSegments = [segment.feature];
+    // Collect candidate segment OIDs: current + next in driving direction
+    const candidateOids = new Set();
+    candidateOids.add(attrs.oid);
     const nextSeg = findNextSegment(segment);
-    if (nextSeg) candidateSegments.push(nextSeg);
+    if (nextSeg) candidateOids.add(nextSeg.attributes.oid);
 
     for (const cam of allCameras) {
         const g = cam.geometry;
@@ -1210,20 +1425,18 @@ function checkDrivingAlerts(userPos) {
         const a = cam.attributes;
         if (a.status && a.status !== 'פעיל') continue;
 
-        const camPos = L.latLng(g.y, g.x);
+        // Use precomputed camera-segment index
+        const mapping = cameraSegmentMap[a.OBJECTID];
+        if (!mapping) continue;
 
-        // Is this camera on one of the candidate segments?
-        let onCandidate = false;
-        for (const seg of candidateSegments) {
-            if (!seg.geometry || !seg.geometry.paths) continue;
-            if (distanceToPolyline(camPos, seg.geometry.paths) < SEGMENT_MATCH_RADIUS) {
-                onCandidate = true;
-                break;
-            }
-        }
+        // Check if camera is assigned to any of our candidate segments
+        const onCandidate = mapping.segments.some(seg =>
+            candidateOids.has(seg.attributes.oid)
+        );
         if (!onCandidate) continue;
 
         // Distance from user to camera
+        const camPos = L.latLng(g.y, g.x);
         const dist = userPos.distanceTo(camPos);
         if (dist > CAMERA_ALERT_RADIUS) continue;
 
@@ -1531,6 +1744,9 @@ function setupDriveControls() {
 
     // Setup photo modal events
     setupPhotoModal();
+
+    // Setup camera report modal events
+    setupCameraReportModal();
 }
 
 // ============================================================
@@ -1863,6 +2079,142 @@ function submitReport() {
 }
 
 // ============================================================
+// Camera Direction Report
+// ============================================================
+
+let pendingCameraReportData = { camObjectId: null, photoData: null };
+
+/**
+ * Open camera report modal for a bidirectional camera.
+ * User can photograph the camera and submit a report so a human
+ * (or future bot) can determine which direction it faces.
+ */
+function openCameraReportModal(camObjectId) {
+    pendingCameraReportData = { camObjectId, photoData: null };
+
+    // Find camera info
+    const cam = allCameras.find(c => c.attributes.OBJECTID === camObjectId);
+    const mapping = cameraSegmentMap[camObjectId];
+
+    const modal = document.getElementById('cameraReportModal');
+    if (!modal) return;
+
+    // Fill in camera info
+    const infoEl = document.getElementById('camReportInfo');
+    if (infoEl && cam) {
+        const a = cam.attributes;
+        const segDescs = (mapping ? mapping.segments : []).map(seg => {
+            const sa = seg.attributes;
+            const dirMap = { N: '↑צפון', NE: '↗צפ-מזרח', E: '→מזרח', SE: '↘דרום-מזרח', S: '↓דרום', SW: '↙דרום-מערב', W: '←מערב', NW: '↖צפ-מערב' };
+            const dirText = dirMap[sa.direction_name] || 'דו-כיווני';
+            return `${sa.from_street || '?'} → ${sa.to_street || '?'} (${dirText})`;
+        }).join('<br>');
+        infoEl.innerHTML = `
+            <strong>${a.name || ''}</strong><br>
+            <span style="font-size:12px;color:#666;">רחוב: ${a.t_rechov1 || '?'} ${a.ms_bayit1 || ''}</span><br>
+            <span style="font-size:12px;color:#f39c12;">↔ מסווגת לשני כיוונים:</span><br>
+            <span style="font-size:12px;">${segDescs}</span>
+        `;
+    }
+
+    // Reset photo
+    document.getElementById('camPhotoPreview').style.display = 'none';
+    document.getElementById('camPhotoPreview').src = '';
+    document.getElementById('camReportNotes').value = '';
+
+    modal.classList.add('show');
+    map.closePopup();
+}
+
+function closeCameraReportModal() {
+    document.getElementById('cameraReportModal').classList.remove('show');
+}
+
+function setupCameraReportModal() {
+    const modal = document.getElementById('cameraReportModal');
+    if (!modal) return;
+
+    const inputArea = document.getElementById('camPhotoInputArea');
+    const fileInput = document.getElementById('camPhotoFileInput');
+    const submitBtn = document.getElementById('btnSubmitCamReport');
+    const cancelBtn = document.getElementById('btnCancelCamReport');
+
+    inputArea.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', handleCameraPhotoSelected);
+    submitBtn.addEventListener('click', submitCameraReport);
+    cancelBtn.addEventListener('click', closeCameraReportModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeCameraReportModal();
+    });
+}
+
+async function handleCameraPhotoSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const preview = document.getElementById('camPhotoPreview');
+
+    // Compress
+    const compressed = await resizePhoto(file);
+    if (compressed) {
+        pendingCameraReportData.photoData = compressed;
+        preview.src = compressed;
+        preview.style.display = 'block';
+    } else {
+        // Fallback: read original
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            pendingCameraReportData.photoData = ev.target.result;
+            preview.src = ev.target.result;
+            preview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+    }
+}
+
+function submitCameraReport() {
+    const notes = document.getElementById('camReportNotes').value.trim();
+    const camId = pendingCameraReportData.camObjectId;
+
+    if (!pendingCameraReportData.photoData) {
+        alert('נא לצלם את המצלמה');
+        return;
+    }
+
+    const cam = allCameras.find(c => c.attributes.OBJECTID === camId);
+    const a = cam ? cam.attributes : {};
+    const g = cam ? cam.geometry : {};
+
+    const report = {
+        type: 'camera_direction',
+        street: a.t_rechov1 || '',
+        cameraObjectId: camId,
+        cameraName: a.name || '',
+        cameraMsAtar: a.ms_atar || null,
+        notes: notes,
+        lat: g.y || null,
+        lng: g.x || null,
+        gpsSource: 'camera_location',
+        photoData: pendingCameraReportData.photoData,
+        decodedHours: null,
+        featureIds: null
+    };
+
+    const saved = addCommunityReport(report);
+    if (!saved) {
+        alert('שגיאה בשמירת הדיווח. ייתכן שהזיכרון מלא — נסה למחוק דיווחים ישנים.');
+        return;
+    }
+
+    closeCameraReportModal();
+    showBanner(`📷 דיווח מצלמה נשמר — ${a.name || a.t_rechov1 || ''}`);
+    console.log('📷 Camera report saved for camera', camId);
+
+    // Reset file input
+    document.getElementById('camPhotoFileInput').value = '';
+}
+
+// ============================================================
 // Reports Panel
 // ============================================================
 
@@ -1903,6 +2255,10 @@ function renderReportCard(report) {
         day: '2-digit', month: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit'
     });
+    const isCameraReport = report.type === 'camera_direction';
+    const icon = isCameraReport ? '📷' : '🪧';
+    const title = isCameraReport ? (report.cameraName || report.street || 'מצלמה') : report.street;
+
     const statusLabels = { pending: 'ממתין לפענוח', decoded: 'פוענח', rejected: 'נדחה' };
     const statusLabel = statusLabels[report.status] || report.status;
     const hasPhoto = report.photoData ? `<img class="report-card-photo" src="${report.photoData}" onclick="window.open(this.src)">` : '';
@@ -1919,21 +2275,31 @@ function renderReportCard(report) {
         decodedInfo = `<div style="font-size: 12px; margin-top: 4px; padding: 4px 8px; background: #d4edda; border-radius: 6px;">🕐 ${parts.join(' | ')}</div>`;
     }
 
+    const cameraInfoHtml = isCameraReport
+        ? `<div class="report-card-meta">מצלמה: ${report.cameraName || ''} (אתר ${report.cameraMsAtar || '?'})</div>`
+        : '';
+
+    // Decode/edit actions only for sign reports (not camera direction reports)
+    const decodeActions = !isCameraReport ? `
+        ${report.status === 'pending' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">🔍 פענח שעות</button>` : ''}
+        ${report.status === 'decoded' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">✏️ ערוך שעות</button>` : ''}
+    ` : '';
+
     return `
         <div class="report-card" id="report-${report.id}">
             <div class="report-card-header">
-                <span class="report-card-street">🪧 ${report.street}</span>
+                <span class="report-card-street">${icon} ${title}</span>
                 <span class="report-status-badge ${report.status}">${statusLabel}</span>
             </div>
             ${hasPhoto}
             <div class="report-card-meta">${date} · ${gpsInfo}</div>
+            ${cameraInfoHtml}
             ${report.featureIds && report.featureIds.length > 0 ? `<div class="report-card-meta">📍 ${report.featureIds.length} קטעים נבחרו</div>` : ''}
             ${report.section ? `<div class="report-card-meta">קטע: ${report.section}</div>` : ''}
             ${report.notes ? `<div class="report-card-meta">הערות: ${report.notes}</div>` : ''}
             ${decodedInfo}
             <div class="report-card-actions">
-                ${report.status === 'pending' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">🔍 פענח שעות</button>` : ''}
-                ${report.status === 'decoded' ? `<button class="report-action-btn primary" onclick="showDecodeForm('${report.id}')">✏️ ערוך שעות</button>` : ''}
+                ${decodeActions}
                 <button class="report-action-btn" onclick="zoomToReport('${report.id}')">🗺️ הצג במפה</button>
                 <button class="report-action-btn danger" onclick="deleteReport('${report.id}')">🗑️ מחק</button>
             </div>
@@ -2124,6 +2490,9 @@ async function init() {
         const now = new Date();
         renderLanes(allFeatures, now);
         renderCameras(allCameras);
+
+        // Build camera→segment offline index
+        buildCameraSegmentIndex();
 
         // Build street autocomplete for sign reports
         buildStreetAutocomplete();
