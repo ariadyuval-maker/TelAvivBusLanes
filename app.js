@@ -652,6 +652,33 @@ function renderLanes(features, now) {
 
             laneLayerGroup.addLayer(polyline);
         });
+
+        // Add direction arrow(s) on each segment — use traffic order
+        const trafficPts = getFeaturePointsInTrafficOrder(feature);
+        if (trafficPts.length >= 2) {
+            let totalLen = 0;
+            for (let k = 1; k < trafficPts.length; k++) {
+                totalLen += L.latLng(trafficPts[k - 1]).distanceTo(L.latLng(trafficPts[k]));
+            }
+            const numArrows = Math.max(1, Math.round(totalLen / 120));
+            for (let a = 0; a < numArrows; a++) {
+                const frac = (a + 0.5) / numArrows;
+                const ptIdx = Math.min(Math.floor(frac * trafficPts.length), trafficPts.length - 1);
+                const prevIdx = Math.max(0, ptIdx - 1);
+                const nextIdx = Math.min(trafficPts.length - 1, ptIdx + 1);
+                const localBearing = bearingBetween(
+                    trafficPts[prevIdx][0], trafficPts[prevIdx][1],
+                    trafficPts[nextIdx][0], trafficPts[nextIdx][1]
+                );
+                const arrowIcon = L.divIcon({
+                    className: 'lane-arrow-icon',
+                    html: `<div style="transform:rotate(${localBearing - 90}deg)">▶</div>`,
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8]
+                });
+                L.marker(trafficPts[ptIdx], { icon: arrowIcon, interactive: false }).addTo(laneLayerGroup);
+            }
+        }
     });
 
     // Update counters
@@ -2637,44 +2664,66 @@ function onSimMapClick(e) {
 }
 
 /**
- * Convert a direction name (N/S/E/W/NE/NW/SE/SW) to an arrow emoji.
- * If direction_name is null, compute from geometry vertex order.
+ * Determine the authoritative traffic direction bearing for a feature.
+ * Uses direction_name as truth. If geometry goes opposite, we know to flip.
+ * Returns bearing in degrees (0=N, 90=E, 180=S, 270=W).
+ */
+const DIR_NAME_TO_BEARING = { 'N':0, 'NE':45, 'E':90, 'SE':135, 'S':180, 'SW':225, 'W':270, 'NW':315 };
+
+function getFeatureTrafficBearing(feature) {
+    const dir = feature.attributes.direction_name;
+    if (dir && DIR_NAME_TO_BEARING[dir] !== undefined) {
+        return DIR_NAME_TO_BEARING[dir];
+    }
+    // Fallback: compute from geometry
+    const paths = feature.geometry && feature.geometry.paths;
+    if (!paths || paths.length === 0) return 0;
+    const allPts = [];
+    paths.forEach(p => p.forEach(c => allPts.push(c)));
+    if (allPts.length < 2) return 0;
+    return bearingBetween(allPts[0][1], allPts[0][0], allPts[allPts.length-1][1], allPts[allPts.length-1][0]);
+}
+
+/**
+ * Check if the geometry vertex order goes opposite to the traffic direction.
+ * Returns true if geometry needs to be reversed to match traffic flow.
+ */
+function isGeometryReversed(feature) {
+    const dir = feature.attributes.direction_name;
+    if (!dir || DIR_NAME_TO_BEARING[dir] === undefined) return false;
+    const paths = feature.geometry && feature.geometry.paths;
+    if (!paths || paths.length === 0) return false;
+    const allPts = [];
+    paths.forEach(p => p.forEach(c => allPts.push(c)));
+    if (allPts.length < 2) return false;
+    const geoBearing = bearingBetween(allPts[0][1], allPts[0][0], allPts[allPts.length-1][1], allPts[allPts.length-1][0]);
+    const expected = DIR_NAME_TO_BEARING[dir];
+    let diff = Math.abs(geoBearing - expected);
+    if (diff > 180) diff = 360 - diff;
+    return diff > 90;
+}
+
+/**
+ * Convert a direction name to an arrow emoji.
  */
 function getDirectionArrow(item) {
     if (item.type === 'waypoint') return '';
-    const dir = item.feature.attributes.direction_name;
-    const arrowMap = {
-        'N': '⬆️', 'S': '⬇️', 'E': '➡️', 'W': '⬅️',
-        'NE': '↗️', 'NW': '↖️', 'SE': '↘️', 'SW': '↙️'
-    };
-    if (dir && arrowMap[dir]) return arrowMap[dir];
-
-    // Fallback: compute from geometry start→end
-    const paths = item.feature.geometry && item.feature.geometry.paths;
-    if (!paths || paths.length === 0) return '';
-    const firstPath = paths[0];
-    if (firstPath.length < 2) return '';
-    const start = firstPath[0];
-    const end = firstPath[firstPath.length - 1];
-    const bearing = bearingBetween(start[1], start[0], end[1], end[0]);
-    // Convert bearing to 8-way arrow
+    const bearing = getFeatureTrafficBearing(item.feature);
     const idx = Math.round(((bearing + 360) % 360) / 45) % 8;
     return ['⬆️','↗️','➡️','↘️','⬇️','↙️','⬅️','↖️'][idx];
 }
 
 /**
- * Get bearing angle from geometry for placing arrow markers on map.
- * Returns bearing in degrees (0=N, 90=E).
+ * Get ordered [lat,lng] points for a feature, in the TRAFFIC direction.
+ * Reverses geometry if needed so points go in the direction vehicles drive.
  */
-function getSegmentBearing(item) {
-    if (item.type !== 'segment' || !item.feature.geometry || !item.feature.geometry.paths) return 0;
-    const paths = item.feature.geometry.paths;
-    const allPts = [];
-    paths.forEach(p => p.forEach(c => allPts.push(c)));
-    if (allPts.length < 2) return 0;
-    const start = allPts[0];
-    const end = allPts[allPts.length - 1];
-    return bearingBetween(start[1], start[0], end[1], end[0]);
+function getFeaturePointsInTrafficOrder(feature) {
+    const paths = feature.geometry && feature.geometry.paths;
+    if (!paths) return [];
+    const pts = [];
+    paths.forEach(p => p.forEach(c => pts.push([c[1], c[0]])));
+    if (isGeometryReversed(feature)) pts.reverse();
+    return pts;
 }
 
 /**
@@ -2757,27 +2806,22 @@ function updateSimHighlight() {
                 path.forEach(pt => allPts.push(pt));
             });
 
-            // Add direction arrow markers along the segment
-            const bearing = getSegmentBearing(item);
-            const flatPts = [];
-            latLngs.forEach(path => path.forEach(pt => flatPts.push(pt)));
-            if (flatPts.length >= 2) {
-                // Place arrows every ~100m, at least one at midpoint
-                const totalLen = flatPts.reduce((sum, pt, j) => {
+            // Add direction arrow markers along segment — traffic order
+            const trafficPts = getFeaturePointsInTrafficOrder(item.feature);
+            if (trafficPts.length >= 2) {
+                const totalLen = trafficPts.reduce((sum, pt, j) => {
                     if (j === 0) return 0;
-                    return sum + L.latLng(flatPts[j - 1]).distanceTo(L.latLng(pt));
+                    return sum + L.latLng(trafficPts[j - 1]).distanceTo(L.latLng(pt));
                 }, 0);
                 const numArrows = Math.max(1, Math.round(totalLen / 100));
                 for (let a = 0; a < numArrows; a++) {
                     const frac = (a + 0.5) / numArrows;
-                    const ptIdx = Math.min(Math.floor(frac * flatPts.length), flatPts.length - 1);
-                    const arrowPt = flatPts[ptIdx];
-                    // Local bearing from nearby points
+                    const ptIdx = Math.min(Math.floor(frac * trafficPts.length), trafficPts.length - 1);
                     const prevIdx = Math.max(0, ptIdx - 1);
-                    const nextIdx = Math.min(flatPts.length - 1, ptIdx + 1);
+                    const nextIdx = Math.min(trafficPts.length - 1, ptIdx + 1);
                     const localBearing = bearingBetween(
-                        flatPts[prevIdx][0], flatPts[prevIdx][1],
-                        flatPts[nextIdx][0], flatPts[nextIdx][1]
+                        trafficPts[prevIdx][0], trafficPts[prevIdx][1],
+                        trafficPts[nextIdx][0], trafficPts[nextIdx][1]
                     );
                     const arrowIcon = L.divIcon({
                         className: 'sim-arrow-icon',
@@ -2785,7 +2829,7 @@ function updateSimHighlight() {
                         iconSize: [24, 24],
                         iconAnchor: [12, 12]
                     });
-                    L.marker(arrowPt, { icon: arrowIcon, interactive: false }).addTo(simHighlightLayer);
+                    L.marker(trafficPts[ptIdx], { icon: arrowIcon, interactive: false }).addTo(simHighlightLayer);
                 }
             }
         } else if (item.type === 'waypoint') {
@@ -2801,32 +2845,78 @@ function updateSimHighlight() {
         }
     });
 
-    // Draw connecting lines between consecutive route items
+    // Connect consecutive route items via OSRM road routing
     if (simRoute.length >= 2) {
-        const centers = simRoute.map(item => {
-            if (item.type === 'waypoint') return item.latlng;
-            if (item.feature && item.feature.geometry && item.feature.geometry.paths) {
-                const p = item.feature.geometry.paths;
-                const all = [];
-                p.forEach(path => path.forEach(c => all.push([c[1], c[0]])));
-                const mid = all[Math.floor(all.length / 2)];
-                return mid || all[0];
-            }
-            return null;
-        }).filter(Boolean);
-        if (centers.length >= 2) {
-            L.polyline(centers, {
-                color: '#f39c12',
-                weight: 3,
-                opacity: 0.5,
-                dashArray: '4 8'
-            }).addTo(simHighlightLayer);
-        }
+        fetchOSRMConnectors(simRoute, simHighlightLayer, allPts);
     }
 
     // Fit map to route
     if (allPts.length > 0) {
         map.fitBounds(L.latLngBounds(allPts).pad(0.2));
+    }
+}
+
+/**
+ * Get the endpoint [lat,lng] of a route item.
+ * For segments, returns the END point (in traffic direction).
+ */
+function getRouteItemEnd(item) {
+    if (item.type === 'waypoint') return item.latlng;
+    const pts = getFeaturePointsInTrafficOrder(item.feature);
+    return pts.length > 0 ? pts[pts.length - 1] : null;
+}
+
+/**
+ * Get the start point [lat,lng] of a route item.
+ * For segments, returns the START point (in traffic direction).
+ */
+function getRouteItemStart(item) {
+    if (item.type === 'waypoint') return item.latlng;
+    const pts = getFeaturePointsInTrafficOrder(item.feature);
+    return pts.length > 0 ? pts[0] : null;
+}
+
+/**
+ * Fetch OSRM road-following routes between consecutive route items.
+ * Draws them as dashed orange polylines on the highlight layer.
+ * Also stores connector paths in simRoute items for buildSimPath.
+ */
+async function fetchOSRMConnectors(route, highlightLayer, allPtsRef) {
+    for (let i = 0; i < route.length - 1; i++) {
+        const endPt = getRouteItemEnd(route[i]);
+        const startPt = getRouteItemStart(route[i + 1]);
+        if (!endPt || !startPt) continue;
+
+        const dist = L.latLng(endPt).distanceTo(L.latLng(startPt));
+        if (dist < 10) {
+            route[i]._connector = null; // segments are close enough
+            continue;
+        }
+
+        try {
+            // OSRM expects lng,lat
+            const url = `https://router.project-osrm.org/route/v1/driving/${endPt[1]},${endPt[0]};${startPt[1]},${startPt[0]}?overview=full&geometries=geojson`;
+            const resp = await fetch(url);
+            const data = await resp.json();
+            if (data.code === 'Ok' && data.routes && data.routes[0]) {
+                const coords = data.routes[0].geometry.coordinates; // [lng, lat]
+                const connPts = coords.map(c => [c[1], c[0]]); // [lat, lng]
+                route[i]._connector = connPts;
+
+                L.polyline(connPts, {
+                    color: '#f39c12',
+                    weight: 4,
+                    opacity: 0.7,
+                    dashArray: '6 8'
+                }).addTo(highlightLayer);
+                connPts.forEach(pt => allPtsRef.push(pt));
+            } else {
+                route[i]._connector = null;
+            }
+        } catch (e) {
+            console.warn('OSRM routing failed for connector', i, e);
+            route[i]._connector = null;
+        }
     }
 }
 
@@ -2842,47 +2932,28 @@ function updateSimStartButton() {
 function buildSimPath() {
     const points = [];
 
+    function addPoint(pt) {
+        if (points.length > 0) {
+            const last = points[points.length - 1];
+            if (L.latLng(last).distanceTo(L.latLng(pt)) < 3) return;
+        }
+        points.push(pt);
+    }
+
     for (let i = 0; i < simRoute.length; i++) {
         const item = simRoute[i];
 
         if (item.type === 'waypoint') {
-            const wp = item.latlng;
-            if (points.length > 0) {
-                const last = points[points.length - 1];
-                if (L.latLng(last).distanceTo(L.latLng(wp)) >= 5) {
-                    points.push(wp);
-                }
-            } else {
-                points.push(wp);
-            }
-            continue;
+            addPoint(item.latlng);
+        } else {
+            // Use traffic-ordered points for correct driving direction
+            const segPts = getFeaturePointsInTrafficOrder(item.feature);
+            segPts.forEach(pt => addPoint(pt));
         }
 
-        // segment type
-        const f = item.feature;
-        if (!f || !f.geometry || !f.geometry.paths) continue;
-
-        let segPts = [];
-        f.geometry.paths.forEach(p => {
-            p.forEach(c => segPts.push([c[1], c[0]]));
-        });
-        if (segPts.length === 0) continue;
-
-        if (points.length > 0 && segPts.length >= 2) {
-            const lastPt = points[points.length - 1];
-            const distToStart = L.latLng(lastPt).distanceTo(L.latLng(segPts[0]));
-            const distToEnd = L.latLng(lastPt).distanceTo(L.latLng(segPts[segPts.length - 1]));
-            if (distToEnd < distToStart) {
-                segPts.reverse();
-            }
-        }
-
-        for (let j = 0; j < segPts.length; j++) {
-            if (j === 0 && points.length > 0) {
-                const last = points[points.length - 1];
-                if (L.latLng(last).distanceTo(L.latLng(segPts[0])) < 5) continue;
-            }
-            points.push(segPts[j]);
+        // Add OSRM connector to next segment (if available)
+        if (item._connector && item._connector.length > 0) {
+            item._connector.forEach(pt => addPoint(pt));
         }
     }
 
