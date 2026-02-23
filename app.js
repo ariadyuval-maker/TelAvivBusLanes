@@ -642,10 +642,13 @@ function renderLanes(features, now) {
                 this.setStyle({ weight: CONFIG.lineWeight, opacity: 0.85 });
             });
 
-            polyline.bindPopup(createPopupContent(feature, status), {
-                maxWidth: 320,
-                className: 'lane-popup-container'
-            });
+            // Don't bind popups during sim planning (they intercept clicks)
+            if (!simPlanning) {
+                polyline.bindPopup(createPopupContent(feature, status), {
+                    maxWidth: 320,
+                    className: 'lane-popup-container'
+                });
+            }
 
             laneLayerGroup.addLayer(polyline);
         });
@@ -2497,6 +2500,9 @@ function enterSimPlanning() {
     document.getElementById('simStartBtn').style.display = '';
     document.getElementById('simStopBtn').style.display = 'none';
 
+    // Disable popups on lane polylines so clicks pass through to map
+    _disableLanePopups();
+
     // Use map click for route building
     _removeSimMapClick();
     _simMapClickHandler = function(e) { onSimMapClick(e); };
@@ -2513,6 +2519,31 @@ function _removeSimMapClick() {
 }
 
 /**
+ * Temporarily unbind popups from lane polylines so clicks propagate to the map.
+ */
+function _disableLanePopups() {
+    map.closePopup();
+    laneLayerGroup.eachLayer(layer => {
+        if (layer.getPopup()) {
+            layer._simSavedPopup = layer.getPopup();
+            layer.unbindPopup();
+        }
+    });
+}
+
+/**
+ * Re-bind saved popups on lane polylines after planning is done.
+ */
+function _restoreLanePopups() {
+    laneLayerGroup.eachLayer(layer => {
+        if (layer._simSavedPopup) {
+            layer.bindPopup(layer._simSavedPopup);
+            delete layer._simSavedPopup;
+        }
+    });
+}
+
+/**
  * Completely exit the simulator and clean up.
  */
 function exitSimulator() {
@@ -2523,8 +2554,9 @@ function exitSimulator() {
     document.body.classList.remove('sim-planning');
     document.getElementById('btnSimulator').classList.remove('active');
 
-    // Remove map click handler
+    // Remove map click handler and restore popups
     _removeSimMapClick();
+    _restoreLanePopups();
 
     // Remove highlight layer
     if (simHighlightLayer) {
@@ -2834,8 +2866,9 @@ function startSimPlayback() {
     document.getElementById('simStartBtn').style.display = 'none';
     document.getElementById('simStopBtn').style.display = '';
 
-    // Remove map click handler during playback
+    // Remove map click handler during playback and restore popups
     _removeSimMapClick();
+    _restoreLanePopups();
 
     // Build path
     simPath = buildSimPath();
@@ -3106,6 +3139,12 @@ function clearSimRoute() {
     renderSimRouteList();
     updateSimStartButton();
     updateSimStatus();
+    // Re-enter planning state
+    _disableLanePopups();
+    if (!_simMapClickHandler) {
+        _simMapClickHandler = function(e) { onSimMapClick(e); };
+        map.on('click', _simMapClickHandler);
+    }
     document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ בכל מקום על המפה';
     document.getElementById('simStartBtn').style.display = '';
     document.getElementById('simStopBtn').style.display = 'none';
