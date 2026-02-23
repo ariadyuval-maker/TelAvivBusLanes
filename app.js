@@ -1456,11 +1456,17 @@ function submitReport() {
         featureId: null
     };
 
+    console.log('📋 submitReport: photoData size =', (report.photoData || '').length, 'bytes');
     const saved = addCommunityReport(report);
+    console.log('📋 submitReport: addCommunityReport returned:', saved);
     if (!saved) {
         alert('שגיאה בשמירת הדיווח. ייתכן שהזיכרון מלא — נסה למחוק דיווחים ישנים.');
         return;
     }
+    // Verify it was actually saved
+    const verify = loadCommunityReports();
+    console.log('📋 submitReport: verify — reports in storage:', verify.length);
+
     closePhotoModal();
 
     showBanner(`🪧 דיווח שלט נשמר — ${street}`);
@@ -1489,6 +1495,7 @@ function closeReportsPanel() {
 function renderReportsList() {
     const container = document.getElementById('reportsList');
     const reports = loadCommunityReports();
+    console.log('📋 renderReportsList: loaded', reports.length, 'reports from localStorage');
 
     if (reports.length === 0) {
         container.innerHTML = `
@@ -1658,7 +1665,7 @@ function zoomToReport(reportId) {
 
 function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js')
+        navigator.serviceWorker.register('./sw.js')
             .then(reg => console.log('✅ Service Worker registered'))
             .catch(err => console.warn('SW registration failed:', err));
     }

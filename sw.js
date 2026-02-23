@@ -1,11 +1,11 @@
-const CACHE_NAME = 'buslanes-v6';
+const CACHE_NAME = 'buslanes-v7';
 const STATIC_ASSETS = [
-    '/',
-    '/index.html',
-    '/app.js',
-    '/bus_lane_hours.js',
-    '/community_reports.js',
-    '/manifest.json',
+    './',
+    './index.html',
+    './app.js',
+    './bus_lane_hours.js',
+    './community_reports.js',
+    './manifest.json',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
 ];
@@ -35,17 +35,17 @@ self.addEventListener('fetch', event => {
         return;
     }
 
-    // Cache-first for static assets, network-first for others
+    // Network-first for our own files (so updates always propagate)
+    // Fall back to cache only if offline
     event.respondWith(
-        caches.match(event.request).then(cached => {
-            if (cached) return cached;
-            return fetch(event.request).then(response => {
-                if (response.ok) {
-                    const clone = response.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-                }
-                return response;
-            });
+        fetch(event.request).then(response => {
+            if (response.ok) {
+                const clone = response.clone();
+                caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+            }
+            return response;
+        }).catch(() => {
+            return caches.match(event.request);
         })
     );
 });
