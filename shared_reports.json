@@ -50,5 +50,28 @@
     "id": "mlzehndc_eaew",
     "timestamp": "2026-02-23T16:38:13.392Z",
     "status": "decoded"
+  },
+  {
+    "street": "קפלן אליעזר",
+    "section": "דה וינצ'י לאונרדו→בגין מנחם, אבן גבירול→דה וינצ'י לאונרדו, בגין מנחם→אבן גבירול",
+    "notes": "",
+    "lat": null,
+    "lng": null,
+    "gpsSource": null,
+    "photoData": null,
+    "decodedHours": {
+      "allWeek": false,
+      "sun_thu": null,
+      "fri": null,
+      "sat": null
+    },
+    "featureIds": [
+      34,
+      64,
+      103
+    ],
+    "id": "mlzjy2pl_oh9g",
+    "timestamp": "2026-02-23T19:10:57.849Z",
+    "status": "decoded"
   }
 ]
