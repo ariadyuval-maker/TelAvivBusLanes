@@ -829,6 +829,11 @@ const PROXIMITY_METERS = 200; // alert when within 200m of a blocked lane
 // ------ Driving Mode State ------
 let drivingMode = false;
 
+// ------ GPS Heading State ------
+let gpsHistory = []; // last N positions: { lat, lng, time }
+const GPS_HISTORY_SIZE = 5;
+let currentHeading = null; // degrees, 0=north, 90=east
+
 /**
  * Start watching GPS position
  */
@@ -880,18 +885,16 @@ function onGpsPosition(pos) {
     const accuracy = pos.coords.accuracy;
     userLatLng = L.latLng(lat, lng);
 
+    // Store GPS history for heading calculation
+    const now = Date.now();
+    gpsHistory.push({ lat, lng, time: now });
+    if (gpsHistory.length > GPS_HISTORY_SIZE) gpsHistory.shift();
+
+    // Calculate heading from GPS history
+    currentHeading = calculateHeading(userLatLng);
+
     // Update / create user marker
-    if (!userMarker) {
-        const icon = L.divIcon({
-            className: 'user-marker',
-            html: '<div class="user-dot"></div>',
-            iconSize: [20, 20],
-            iconAnchor: [10, 10]
-        });
-        userMarker = L.marker(userLatLng, { icon, zIndexOffset: 9999 }).addTo(map);
-    } else {
-        userMarker.setLatLng(userLatLng);
-    }
+    updateUserMarker();
 
     // Update accuracy circle
     if (!userAccuracyCircle) {
@@ -915,6 +918,123 @@ function onGpsPosition(pos) {
         if (allFeatures.length > 0) checkProximity(userLatLng);
         if (allCameras.length > 0) checkCameraProximity(userLatLng);
     }
+}
+
+/**
+ * Create or update the user position marker.
+ * In driving mode: shows a 🚗 rotated to the heading direction.
+ * Otherwise: shows a blue dot.
+ */
+function updateUserMarker() {
+    if (!userLatLng) return;
+
+    const headingDeg = currentHeading !== null ? Math.round(currentHeading) : 0;
+    const hasHeading = currentHeading !== null;
+
+    if (drivingMode) {
+        // Car icon rotated to heading
+        const html = `<div class="car-icon" style="transform: rotate(${headingDeg}deg);">🚗</div>`;
+        const icon = L.divIcon({
+            className: 'car-marker',
+            html: html,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18]
+        });
+        if (!userMarker) {
+            userMarker = L.marker(userLatLng, { icon, zIndexOffset: 9999 }).addTo(map);
+        } else {
+            userMarker.setLatLng(userLatLng);
+            userMarker.setIcon(icon);
+        }
+    } else {
+        // Blue dot
+        const icon = L.divIcon({
+            className: 'user-marker',
+            html: '<div class="user-dot"></div>',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+        if (!userMarker) {
+            userMarker = L.marker(userLatLng, { icon, zIndexOffset: 9999 }).addTo(map);
+        } else {
+            userMarker.setLatLng(userLatLng);
+            userMarker.setIcon(icon);
+        }
+    }
+}
+
+/**
+ * Calculate heading (bearing) in degrees from GPS history.
+ * Strategy:
+ * 1. If on a one-way street (direction_name is set), use that direction.
+ * 2. Otherwise, calculate bearing from last 3+ GPS points.
+ * Returns: degrees (0=north, 90=east, 180=south, 270=west) or null.
+ */
+function calculateHeading(currentPos) {
+    // Strategy 1: Check if user is on a one-way street
+    const nearestDir = findNearestLaneDirection(currentPos);
+    if (nearestDir !== null) {
+        return nearestDir;
+    }
+
+    // Strategy 2: Calculate from GPS history (need at least 3 points)
+    if (gpsHistory.length < 3) return currentHeading; // keep previous heading
+
+    // Use the oldest and newest of the last 3 points
+    const recent = gpsHistory.slice(-3);
+    const p1 = recent[0];
+    const p3 = recent[2];
+
+    // Skip if not enough movement (less than ~3 meters)
+    const dist = L.latLng(p1.lat, p1.lng).distanceTo(L.latLng(p3.lat, p3.lng));
+    if (dist < 3) return currentHeading; // keep previous heading if stationary
+
+    return bearingBetween(p1.lat, p1.lng, p3.lat, p3.lng);
+}
+
+/**
+ * Calculate bearing (degrees) from point A to point B.
+ * Returns 0-360 where 0=north, 90=east, 180=south, 270=west.
+ */
+function bearingBetween(lat1, lng1, lat2, lng2) {
+    const toRad = deg => deg * Math.PI / 180;
+    const toDeg = rad => rad * 180 / Math.PI;
+
+    const dLng = toRad(lng2 - lng1);
+    const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+              Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+    const bearing = toDeg(Math.atan2(y, x));
+    return (bearing + 360) % 360;
+}
+
+/**
+ * Find the direction of the nearest one-way lane within 30m.
+ * Returns heading in degrees, or null if not on a one-way street.
+ */
+function findNearestLaneDirection(userPos) {
+    if (allFeatures.length === 0) return null;
+
+    let minDist = Infinity;
+    let nearestDir = null;
+
+    for (const feature of allFeatures) {
+        if (!feature.geometry || !feature.geometry.paths) continue;
+        const dir = feature.attributes.direction_name;
+        if (!dir) continue; // skip if no direction (two-way or unknown)
+
+        const dist = distanceToPolyline(userPos, feature.geometry.paths);
+        if (dist < minDist && dist < 30) { // within 30m
+            minDist = dist;
+            // Map cardinal direction to bearing degrees
+            const dirMap = { N: 0, E: 90, S: 180, W: 270 };
+            if (dirMap[dir] !== undefined) {
+                nearestDir = dirMap[dir];
+            }
+        }
+    }
+
+    return nearestDir;
 }
 
 function onGpsError(err) {
@@ -1160,10 +1280,16 @@ function toggleDrivingMode() {
             updateVoiceButton();
         }
 
+        // Switch marker to car icon immediately
+        if (userMarker && userLatLng) updateUserMarker();
+
         // Request wake lock to prevent screen from sleeping
         requestWakeLock();
     } else {
         releaseWakeLock();
+
+        // Switch marker back to blue dot
+        if (userMarker && userLatLng) updateUserMarker();
     }
 }
 

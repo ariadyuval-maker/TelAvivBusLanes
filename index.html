@@ -339,6 +339,21 @@
             transform: rotate(-45deg);
         }
 
+        /* Car marker for driving mode */
+        .car-marker {
+            background: none !important;
+            border: none !important;
+        }
+        .car-icon {
+            width: 36px;
+            height: 36px;
+            font-size: 28px;
+            line-height: 36px;
+            text-align: center;
+            transition: transform 0.5s ease;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
+        }
+
         /* Driving mode fullscreen style */
         body.driving-mode .info-bar { display: none; }
         body.driving-mode .drive-controls { bottom: 40px; }
