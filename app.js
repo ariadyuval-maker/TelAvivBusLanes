@@ -1211,8 +1211,10 @@ function setupDriveControls() {
     // Photo & Reports buttons
     const btnPhoto = document.getElementById('btnPhoto');
     const btnReports = document.getElementById('btnReports');
+    const btnCloseReports = document.getElementById('btnCloseReports');
     if (btnPhoto) btnPhoto.addEventListener('click', openPhotoModal);
     if (btnReports) btnReports.addEventListener('click', toggleReportsPanel);
+    if (btnCloseReports) btnCloseReports.addEventListener('click', closeReportsPanel);
 
     // Stop auto-follow when user manually pans
     map.on('dragstart', () => {
@@ -1322,8 +1324,25 @@ async function handlePhotoSelected(e) {
         pendingReportData.lat = userLatLng.lat;
         pendingReportData.lng = userLatLng.lng;
         pendingReportData.gpsSource = 'device';
-        gpsStatusEl.innerHTML = `<div class="gps-badge manual">📍 מיקום מה-GPS: ${userLatLng.lat.toFixed(5)}, ${userLatLng.lng.toFixed(5)}</div>`;
+        gpsStatusEl.innerHTML = `<div class="gps-badge manual">📍 מיקום מה-GPS של המכשיר: ${userLatLng.lat.toFixed(5)}, ${userLatLng.lng.toFixed(5)}</div>`;
         autoDetectStreet(userLatLng.lat, userLatLng.lng);
+    } else if (navigator.geolocation) {
+        // Try one-shot geolocation
+        gpsStatusEl.innerHTML = '<div class="gps-badge not-found">⏳ מנסה לקבל מיקום מהמכשיר...</div>';
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                pendingReportData.lat = pos.coords.latitude;
+                pendingReportData.lng = pos.coords.longitude;
+                pendingReportData.gpsSource = 'device';
+                gpsStatusEl.innerHTML = `<div class="gps-badge manual">📍 מיקום מה-GPS: ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}</div>`;
+                autoDetectStreet(pos.coords.latitude, pos.coords.longitude);
+            },
+            () => {
+                pendingReportData.gpsSource = 'none';
+                gpsStatusEl.innerHTML = '<div class="gps-badge not-found">⚠️ לא נמצא מיקום GPS בתמונה או במכשיר. הזן שם רחוב ידנית.</div>';
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+        );
     } else {
         pendingReportData.gpsSource = 'none';
         gpsStatusEl.innerHTML = '<div class="gps-badge not-found">⚠️ לא נמצא מיקום GPS. הזן שם רחוב ידנית.</div>';
@@ -1355,6 +1374,26 @@ function autoDetectStreet(lat, lng) {
         if (!streetInput.value) streetInput.value = closestStreet;
         if (!sectionInput.value && closestSection) sectionInput.value = closestSection;
     }
+}
+
+/**
+ * Build a datalist of unique street names from GIS features for autocomplete.
+ */
+function buildStreetAutocomplete() {
+    let datalist = document.getElementById('streetSuggestions');
+    if (!datalist) {
+        datalist = document.createElement('datalist');
+        datalist.id = 'streetSuggestions';
+        document.body.appendChild(datalist);
+    }
+    const streets = new Set();
+    for (const f of allFeatures) {
+        const name = f.attributes && f.attributes.street_name;
+        if (name) streets.add(name);
+    }
+    datalist.innerHTML = [...streets].sort().map(s => `<option value="${s}">`).join('');
+    const input = document.getElementById('reportStreet');
+    if (input) input.setAttribute('list', 'streetSuggestions');
 }
 
 function submitReport() {
@@ -1427,10 +1466,6 @@ function renderReportsList() {
     // Sort newest first
     const sorted = [...reports].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     container.innerHTML = sorted.map(r => renderReportCard(r)).join('');
-
-    // Setup close button
-    const closeBtn = document.getElementById('btnCloseReports');
-    if (closeBtn) closeBtn.onclick = closeReportsPanel;
 }
 
 function renderReportCard(report) {
@@ -1632,6 +1667,9 @@ async function init() {
         const now = new Date();
         renderLanes(allFeatures, now);
         renderCameras(allCameras);
+
+        // Build street autocomplete for sign reports
+        buildStreetAutocomplete();
 
         // Log matching stats
         let matched = 0, unmatched = 0;
