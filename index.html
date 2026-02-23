@@ -358,8 +358,131 @@
         body.driving-mode .info-bar { display: none; }
         body.driving-mode .drive-controls { bottom: 40px; }
 
+        /* ---- Simulator Panel ---- */
+        .sim-panel {
+            position: fixed;
+            top: 80px;
+            left: -320px;
+            width: 300px;
+            max-height: calc(100vh - 120px);
+            background: rgba(20, 25, 35, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 0 12px 12px 0;
+            color: #fff;
+            z-index: 1100;
+            transition: left 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+        }
+        .sim-panel.open { left: 0; }
+        .sim-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .sim-header h3 { margin: 0; font-size: 15px; }
+        .sim-close {
+            background: none; border: none; color: #fff;
+            font-size: 18px; cursor: pointer; opacity: 0.7;
+        }
+        .sim-close:hover { opacity: 1; }
+        .sim-phase-label {
+            padding: 8px 16px;
+            font-size: 12px;
+            color: #a0c4ff;
+            background: rgba(255,255,255,0.05);
+        }
+        .sim-route-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+            min-height: 60px;
+            max-height: 40vh;
+        }
+        .sim-empty {
+            text-align: center;
+            color: #888;
+            font-size: 13px;
+            padding: 20px 8px;
+        }
+        .sim-seg-item {
+            display: flex;
+            align-items: center;
+            padding: 6px 10px;
+            margin: 3px 0;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.08);
+            font-size: 13px;
+            gap: 8px;
+        }
+        .sim-seg-item .seg-num {
+            min-width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #3498db;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .sim-seg-item .seg-info { flex: 1; line-height: 1.3; }
+        .sim-seg-item .seg-street { font-weight: 600; }
+        .sim-seg-item .seg-section { font-size: 11px; color: #aaa; }
+        .sim-seg-item .seg-remove {
+            background: none; border: none; color: #e74c3c;
+            font-size: 16px; cursor: pointer; opacity: 0.7;
+            padding: 2px 6px;
+        }
+        .sim-seg-item .seg-remove:hover { opacity: 1; }
+        .sim-seg-item.active {
+            background: rgba(46, 204, 113, 0.25);
+            border: 1px solid rgba(46, 204, 113, 0.5);
+        }
+        .sim-seg-item.sim-blocked {
+            background: rgba(231, 76, 60, 0.2);
+        }
+        .sim-controls {
+            padding: 10px 12px;
+            display: flex;
+            gap: 6px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            flex-wrap: wrap;
+        }
+        .sim-btn {
+            flex: 1;
+            padding: 8px 6px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(255,255,255,0.12);
+            color: #fff;
+            min-width: 70px;
+        }
+        .sim-btn:hover { background: rgba(255,255,255,0.2); }
+        .sim-btn.primary { background: #2ecc71; color: #000; }
+        .sim-btn.primary:hover { background: #27ae60; }
+        .sim-btn.primary:disabled { background: #555; color: #999; cursor: default; }
+        .sim-btn.danger { background: #e74c3c; }
+        .sim-btn.danger:hover { background: #c0392b; }
+        .sim-status {
+            padding: 6px 12px;
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+        }
+        /* Highlight polylines in sim planning mode */
+        .sim-planning .leaflet-interactive { cursor: crosshair !important; }
 
-
+        @media (max-width: 768px) {
+            .sim-panel { width: 260px; top: 60px; }
+        }
         @media (max-width: 768px) {
             .drive-btn {
                 width: 48px;
@@ -564,6 +687,25 @@
         <button class="drive-btn" id="btnVoice" title="התראות קוליות">🔇</button>
         <button class="drive-btn" id="btnDrive" title="מצב נהיגה">🚗</button>
         <button class="drive-btn" id="btnReports" title="דיווחי שלטים">📋</button>
+        <button class="drive-btn" id="btnSimulator" title="סימולטור נסיעה">🎮</button>
+    </div>
+
+    <!-- Simulator Route Panel -->
+    <div id="simPanel" class="sim-panel">
+        <div class="sim-header">
+            <h3>🎮 סימולטור נסיעה</h3>
+            <button class="sim-close" id="simClose">✕</button>
+        </div>
+        <div class="sim-phase-label" id="simPhaseLabel">שלב תכנון — לחץ על מקטעים במפה</div>
+        <div class="sim-route-list" id="simRouteList">
+            <div class="sim-empty">לחץ על נתיבים במפה כדי לבנות מסלול</div>
+        </div>
+        <div class="sim-controls">
+            <button class="sim-btn primary" id="simStartBtn" disabled>▶ התחל נסיעה</button>
+            <button class="sim-btn danger" id="simStopBtn" style="display:none;">⏹ עצור</button>
+            <button class="sim-btn" id="simClearBtn">🗑️ נקה מסלול</button>
+        </div>
+        <div class="sim-status" id="simStatus"></div>
     </div>
 
     <!-- Sign Report Modal -->
@@ -632,8 +774,8 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="bus_lane_hours.js?v=13"></script>
-    <script src="community_reports.js?v=13"></script>
-    <script src="app.js?v=13"></script>
+    <script src="bus_lane_hours.js?v=14"></script>
+    <script src="community_reports.js?v=14"></script>
+    <script src="app.js?v=14"></script>
 </body>
 </html>

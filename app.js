@@ -2452,6 +2452,613 @@ function registerServiceWorker() {
 }
 
 // ============================================================
+// Driving Simulator
+// ============================================================
+
+let simActive = false;          // simulator panel open?
+let simPlanning = true;         // true = planning phase, false = playing
+let simRoute = [];              // ordered array of features (segments)
+let simPlaying = false;         // animation running?
+let simAnimFrame = null;        // requestAnimationFrame id
+let simCarMarker = null;        // the simulator car marker
+let simHighlightLayer = null;   // layer group for route highlights
+let simCurrentIdx = 0;          // current segment index during playback
+let simProgress = 0;            // 0..1 progress along current segment
+let simLastTime = 0;            // last animation timestamp
+const SIM_SPEED_KMH = 40;      // km/h
+const SIM_SPEED_MPS = SIM_SPEED_KMH / 3.6;  // ~11.11 m/s
+
+/**
+ * Toggle the simulator panel open/closed.
+ */
+function toggleSimulator() {
+    const panel = document.getElementById('simPanel');
+    if (!panel) return;
+    simActive = !simActive;
+    panel.classList.toggle('open', simActive);
+    document.getElementById('btnSimulator').classList.toggle('active', simActive);
+
+    if (simActive) {
+        enterSimPlanning();
+    } else {
+        exitSimulator();
+    }
+}
+
+/**
+ * Enter planning phase — click segments on the map to add them.
+ */
+function enterSimPlanning() {
+    simPlanning = true;
+    simPlaying = false;
+    document.body.classList.add('sim-planning');
+    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ על מקטעים במפה';
+    document.getElementById('simStartBtn').style.display = '';
+    document.getElementById('simStopBtn').style.display = 'none';
+
+    // Make polylines clickable for route building
+    laneLayerGroup.eachLayer(layer => {
+        layer.off('click.sim');
+        layer.on('click.sim', onSimSegmentClick);
+    });
+
+    renderSimRouteList();
+}
+
+/**
+ * Completely exit the simulator and clean up.
+ */
+function exitSimulator() {
+    stopSimPlayback();
+    simActive = false;
+    simPlanning = false;
+    simRoute = [];
+    document.body.classList.remove('sim-planning');
+    document.getElementById('btnSimulator').classList.remove('active');
+
+    // Remove click handlers
+    laneLayerGroup.eachLayer(layer => layer.off('click.sim'));
+
+    // Remove highlight layer
+    if (simHighlightLayer) {
+        map.removeLayer(simHighlightLayer);
+        simHighlightLayer = null;
+    }
+
+    // Remove car marker
+    if (simCarMarker) {
+        map.removeLayer(simCarMarker);
+        simCarMarker = null;
+    }
+
+    renderSimRouteList();
+}
+
+/**
+ * Handle click on a lane segment during planning phase.
+ */
+function onSimSegmentClick(e) {
+    if (!simPlanning) return;
+
+    // Find which feature this polyline belongs to
+    const clickedLayer = e.target;
+    const clickPt = e.latlng;
+
+    // Find closest feature to the click
+    let bestFeature = null;
+    let bestDist = Infinity;
+    for (const f of allFeatures) {
+        if (!f.geometry || !f.geometry.paths) continue;
+        const d = distanceToPolyline(clickPt, f.geometry.paths);
+        if (d < bestDist) {
+            bestDist = d;
+            bestFeature = f;
+        }
+    }
+    if (!bestFeature || bestDist > 50) return;
+
+    // Don't add duplicates
+    if (simRoute.some(f => f.attributes.oid === bestFeature.attributes.oid)) {
+        showBanner('⚠️ מקטע זה כבר במסלול');
+        return;
+    }
+
+    simRoute.push(bestFeature);
+    renderSimRouteList();
+    updateSimHighlight();
+    updateSimStartButton();
+
+    L.DomEvent.stopPropagation(e);
+}
+
+/**
+ * Remove a segment from the planned route by index.
+ */
+function simRemoveSegment(idx) {
+    simRoute.splice(idx, 1);
+    renderSimRouteList();
+    updateSimHighlight();
+    updateSimStartButton();
+}
+
+/**
+ * Render the route list in the panel.
+ */
+function renderSimRouteList() {
+    const container = document.getElementById('simRouteList');
+    if (!container) return;
+
+    if (simRoute.length === 0) {
+        container.innerHTML = '<div class="sim-empty">לחץ על נתיבים במפה כדי לבנות מסלול</div>';
+        return;
+    }
+
+    container.innerHTML = simRoute.map((f, i) => {
+        const a = f.attributes;
+        const now = new Date();
+        const status = getLaneStatus(f, now);
+        const blockedClass = status.blocked ? ' sim-blocked' : '';
+        const activeClass = (!simPlanning && simPlaying && i === simCurrentIdx) ? ' active' : '';
+        const statusEmoji = status.blocked ? '🔴' : (status.category === 'unknown' ? '⚪' : '🟢');
+        const removeBtn = simPlanning ? `<button class="seg-remove" onclick="simRemoveSegment(${i})">✕</button>` : '';
+
+        return `<div class="sim-seg-item${blockedClass}${activeClass}" id="sim-seg-${i}">
+            <div class="seg-num">${i + 1}</div>
+            <div class="seg-info">
+                <div class="seg-street">${statusEmoji} ${a.street_name || '?'}</div>
+                <div class="seg-section">${a.from_street || '?'} → ${a.to_street || '?'}</div>
+            </div>
+            ${removeBtn}
+        </div>`;
+    }).join('');
+}
+
+/**
+ * Highlight the planned route on the map.
+ */
+function updateSimHighlight() {
+    if (simHighlightLayer) {
+        map.removeLayer(simHighlightLayer);
+    }
+    simHighlightLayer = L.layerGroup().addTo(map);
+
+    simRoute.forEach((f, i) => {
+        if (!f.geometry || !f.geometry.paths) return;
+        const latLngs = arcgisPathsToLatLngs(f.geometry.paths);
+        latLngs.forEach(path => {
+            L.polyline(path, {
+                color: '#f1c40f',
+                weight: 8,
+                opacity: 0.8,
+                dashArray: '10 6'
+            }).addTo(simHighlightLayer);
+        });
+    });
+
+    // Fit map to route
+    if (simRoute.length > 0) {
+        const allPts = [];
+        simRoute.forEach(f => {
+            if (f.geometry && f.geometry.paths) {
+                f.geometry.paths.forEach(p => p.forEach(c => allPts.push([c[1], c[0]])));
+            }
+        });
+        if (allPts.length > 0) {
+            map.fitBounds(L.latLngBounds(allPts).pad(0.2));
+        }
+    }
+}
+
+function updateSimStartButton() {
+    const btn = document.getElementById('simStartBtn');
+    if (btn) btn.disabled = simRoute.length === 0;
+}
+
+/**
+ * Build a continuous array of [lat, lng] points from the route segments.
+ * Ensures segments are connected end-to-end.
+ */
+function buildSimPath() {
+    const points = [];
+
+    for (let i = 0; i < simRoute.length; i++) {
+        const f = simRoute[i];
+        if (!f.geometry || !f.geometry.paths) continue;
+
+        // Flatten all paths into one array of [lat, lng]
+        let segPts = [];
+        f.geometry.paths.forEach(p => {
+            p.forEach(c => segPts.push([c[1], c[0]]));
+        });
+
+        if (segPts.length === 0) continue;
+
+        if (points.length > 0 && segPts.length >= 2) {
+            // Check if segment needs to be reversed to connect to previous end
+            const lastPt = points[points.length - 1];
+            const distToStart = L.latLng(lastPt).distanceTo(L.latLng(segPts[0]));
+            const distToEnd = L.latLng(lastPt).distanceTo(L.latLng(segPts[segPts.length - 1]));
+            if (distToEnd < distToStart) {
+                segPts.reverse();
+            }
+        }
+
+        // Add points (skip first if it duplicates last)
+        for (let j = 0; j < segPts.length; j++) {
+            if (j === 0 && points.length > 0) {
+                const last = points[points.length - 1];
+                if (L.latLng(last).distanceTo(L.latLng(segPts[0])) < 5) continue;
+            }
+            points.push(segPts[j]);
+        }
+    }
+
+    return points;
+}
+
+/**
+ * Precompute cumulative distances along the path.
+ */
+function buildCumulativeDistances(path) {
+    const dists = [0];
+    for (let i = 1; i < path.length; i++) {
+        const d = L.latLng(path[i - 1]).distanceTo(L.latLng(path[i]));
+        dists.push(dists[i - 1] + d);
+    }
+    return dists;
+}
+
+/**
+ * Interpolate position along the path at a given distance.
+ */
+function interpolateOnPath(path, cumDists, distance) {
+    if (distance <= 0) return { lat: path[0][0], lng: path[0][1] };
+    if (distance >= cumDists[cumDists.length - 1]) {
+        const last = path[path.length - 1];
+        return { lat: last[0], lng: last[1] };
+    }
+
+    for (let i = 1; i < cumDists.length; i++) {
+        if (cumDists[i] >= distance) {
+            const segLen = cumDists[i] - cumDists[i - 1];
+            const t = segLen > 0 ? (distance - cumDists[i - 1]) / segLen : 0;
+            const lat = path[i - 1][0] + t * (path[i][0] - path[i - 1][0]);
+            const lng = path[i - 1][1] + t * (path[i][1] - path[i - 1][1]);
+            return { lat, lng, segIdx: i - 1 };
+        }
+    }
+    const last = path[path.length - 1];
+    return { lat: last[0], lng: last[1] };
+}
+
+/**
+ * Figure out which route segment index a path point-index falls in.
+ */
+function pathIndexToSegmentIndex(pathIdx, segmentBoundaries) {
+    for (let i = 0; i < segmentBoundaries.length; i++) {
+        if (pathIdx < segmentBoundaries[i]) return Math.max(0, i - 1);
+    }
+    return segmentBoundaries.length - 1;
+}
+
+// ----- Playback -----
+
+let simPath = [];
+let simCumDists = [];
+let simTotalDist = 0;
+let simTravelledDist = 0;
+let simSegBoundaries = [];   // cumulative point count per segment
+let simAlertedSegments = new Set(); // track which segments we already alerted on
+
+/**
+ * Start the simulation playback.
+ */
+function startSimPlayback() {
+    if (simRoute.length === 0) return;
+
+    simPlanning = false;
+    simPlaying = true;
+    document.body.classList.remove('sim-planning');
+    document.getElementById('simPhaseLabel').textContent = '▶ סימולציה פעילה — 40 קמ״ש';
+    document.getElementById('simStartBtn').style.display = 'none';
+    document.getElementById('simStopBtn').style.display = '';
+
+    // Remove planning click handlers
+    laneLayerGroup.eachLayer(layer => layer.off('click.sim'));
+
+    // Build path
+    simPath = buildSimPath();
+    simCumDists = buildCumulativeDistances(simPath);
+    simTotalDist = simCumDists[simCumDists.length - 1] || 0;
+    simTravelledDist = 0;
+    simCurrentIdx = 0;
+    simAlertedSegments = new Set();
+
+    // Build segment boundaries (cumulative point count per route segment)
+    simSegBoundaries = [];
+    let ptCount = 0;
+    for (const f of simRoute) {
+        if (f.geometry && f.geometry.paths) {
+            f.geometry.paths.forEach(p => ptCount += p.length);
+        }
+        simSegBoundaries.push(ptCount);
+    }
+
+    // Enable voice for sim
+    voiceEnabled = true;
+    updateVoiceButton();
+
+    // Reset cooldowns for fresh sim
+    alertCooldowns = {};
+
+    // Place car at start
+    updateSimCar(simPath[0][0], simPath[0][1], 0);
+
+    // Zoom to start
+    map.setView([simPath[0][0], simPath[0][1]], 17);
+
+    renderSimRouteList();
+    updateSimStatus();
+
+    // Start animation
+    simLastTime = performance.now();
+    simAnimFrame = requestAnimationFrame(simAnimationStep);
+}
+
+/**
+ * Animation step — move the car along the route.
+ */
+function simAnimationStep(timestamp) {
+    if (!simPlaying) return;
+
+    const dt = (timestamp - simLastTime) / 1000;  // seconds
+    simLastTime = timestamp;
+
+    // Advance distance
+    simTravelledDist += SIM_SPEED_MPS * dt;
+
+    if (simTravelledDist >= simTotalDist) {
+        // Reached the end
+        finishSimPlayback();
+        return;
+    }
+
+    // Interpolate position
+    const pos = interpolateOnPath(simPath, simCumDists, simTravelledDist);
+
+    // Figure out current segment index
+    const newIdx = figureOutCurrentSegment(pos.lat, pos.lng);
+    if (newIdx !== simCurrentIdx) {
+        simCurrentIdx = newIdx;
+        renderSimRouteList();
+        scrollToActiveSegment();
+    }
+
+    // Calculate bearing from the path
+    const lookAhead = interpolateOnPath(simPath, simCumDists, simTravelledDist + 5);
+    const heading = bearingBetween(pos.lat, pos.lng, lookAhead.lat, lookAhead.lng);
+
+    // Update car
+    updateSimCar(pos.lat, pos.lng, heading);
+
+    // Follow car
+    map.panTo([pos.lat, pos.lng], { animate: true, duration: 0.3 });
+
+    // Check for alerts on the current segment
+    checkSimAlerts(pos.lat, pos.lng);
+
+    // Update status
+    updateSimStatus();
+
+    simAnimFrame = requestAnimationFrame(simAnimationStep);
+}
+
+/**
+ * Figure out which route segment the car is currently on.
+ */
+function figureOutCurrentSegment(lat, lng) {
+    const pos = L.latLng(lat, lng);
+    let bestIdx = 0;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < simRoute.length; i++) {
+        const f = simRoute[i];
+        if (!f.geometry || !f.geometry.paths) continue;
+        const d = distanceToPolyline(pos, f.geometry.paths);
+        if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
+}
+
+/**
+ * Check and fire alerts for the current simulation position.
+ */
+function checkSimAlerts(lat, lng) {
+    if (simCurrentIdx >= simRoute.length) return;
+
+    const feature = simRoute[simCurrentIdx];
+    const now = new Date();
+    const status = getLaneStatus(feature, now);
+    const attrs = feature.attributes;
+    const segKey = 'sim_lane_' + attrs.oid;
+
+    // Alert for blocked lane
+    if (status.blocked && !simAlertedSegments.has(segKey)) {
+        simAlertedSegments.add(segKey);
+        const street = attrs.street_name || 'לא ידוע';
+        speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
+        showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
+    }
+
+    // Alert for camera
+    const userPos = L.latLng(lat, lng);
+    for (const cam of allCameras) {
+        const g = cam.geometry;
+        if (!g || g.x === undefined) continue;
+        const a = cam.attributes;
+        if (a.status && a.status !== 'פעיל') continue;
+
+        const mapping = cameraSegmentMap[a.OBJECTID];
+        if (!mapping) continue;
+
+        const onRoute = mapping.segments.some(seg =>
+            simRoute.some(rf => rf.attributes.oid === seg.attributes.oid)
+        );
+        if (!onRoute) continue;
+
+        const camPos = L.latLng(g.y, g.x);
+        const dist = userPos.distanceTo(camPos);
+        if (dist > 100) continue;
+
+        const camKey = 'sim_cam_' + a.OBJECTID;
+        if (simAlertedSegments.has(camKey)) continue;
+        simAlertedSegments.add(camKey);
+
+        const street = a.t_rechov1 || a.name || 'לא ידוע';
+        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${Math.round(dist)} מטרים`);
+        showBanner(`📷 מצלמת נת"צ — ${street} (${Math.round(dist)} מ')`);
+        break;
+    }
+}
+
+/**
+ * Update the simulator car marker on the map.
+ */
+function updateSimCar(lat, lng, heading) {
+    const html = `<div class="car-icon" style="transform: rotate(${Math.round(heading)}deg);">🚗</div>`;
+    const icon = L.divIcon({
+        className: 'car-marker',
+        html: html,
+        iconSize: [36, 36],
+        iconAnchor: [18, 18]
+    });
+
+    if (!simCarMarker) {
+        simCarMarker = L.marker([lat, lng], { icon, zIndexOffset: 10000 }).addTo(map);
+    } else {
+        simCarMarker.setLatLng([lat, lng]);
+        simCarMarker.setIcon(icon);
+    }
+}
+
+/**
+ * Scroll the route list to show the active segment.
+ */
+function scrollToActiveSegment() {
+    const el = document.getElementById(`sim-seg-${simCurrentIdx}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+/**
+ * Update status line at bottom of panel.
+ */
+function updateSimStatus() {
+    const el = document.getElementById('simStatus');
+    if (!el) return;
+
+    if (simPlaying) {
+        const pct = simTotalDist > 0 ? Math.round((simTravelledDist / simTotalDist) * 100) : 0;
+        const remaining = Math.max(0, simTotalDist - simTravelledDist);
+        const timeRemSec = remaining / SIM_SPEED_MPS;
+        const mins = Math.floor(timeRemSec / 60);
+        const secs = Math.round(timeRemSec % 60);
+        el.textContent = `${pct}% | ${Math.round(simTotalDist)}מ׳ | נותרו ${mins}:${secs.toString().padStart(2, '0')}`;
+    } else {
+        const totalM = simRoute.reduce((sum, f) => {
+            if (!f.geometry || !f.geometry.paths) return sum;
+            let len = 0;
+            f.geometry.paths.forEach(p => {
+                for (let i = 1; i < p.length; i++) {
+                    len += L.latLng(p[i - 1][1], p[i - 1][0]).distanceTo(L.latLng(p[i][1], p[i][0]));
+                }
+            });
+            return sum + len;
+        }, 0);
+        const timeSec = totalM / SIM_SPEED_MPS;
+        const mins = Math.floor(timeSec / 60);
+        const secs = Math.round(timeSec % 60);
+        el.textContent = simRoute.length > 0
+            ? `${simRoute.length} מקטעים | ${Math.round(totalM)}מ׳ | ~${mins}:${secs.toString().padStart(2, '0')} דקות`
+            : '';
+    }
+}
+
+/**
+ * Stop the playback animation.
+ */
+function stopSimPlayback() {
+    simPlaying = false;
+    if (simAnimFrame) {
+        cancelAnimationFrame(simAnimFrame);
+        simAnimFrame = null;
+    }
+    if (simCarMarker) {
+        map.removeLayer(simCarMarker);
+        simCarMarker = null;
+    }
+}
+
+/**
+ * Finish playback — show summary and return to planning.
+ */
+function finishSimPlayback() {
+    stopSimPlayback();
+    document.getElementById('simPhaseLabel').textContent = '✅ הנסיעה הסתיימה!';
+    speakHebrew('הנסיעה הסתיימה');
+    showBanner('✅ סימולציה הסתיימה');
+
+    // Return to planning after a short delay
+    setTimeout(() => {
+        enterSimPlanning();
+    }, 3000);
+}
+
+/**
+ * Clear the route and reset.
+ */
+function clearSimRoute() {
+    stopSimPlayback();
+    simRoute = [];
+    simCurrentIdx = 0;
+    if (simHighlightLayer) {
+        map.removeLayer(simHighlightLayer);
+        simHighlightLayer = null;
+    }
+    renderSimRouteList();
+    updateSimStartButton();
+    updateSimStatus();
+    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ על מקטעים במפה';
+    document.getElementById('simStartBtn').style.display = '';
+    document.getElementById('simStopBtn').style.display = 'none';
+}
+
+/**
+ * Setup simulator event listeners.
+ */
+function setupSimulator() {
+    const btnSim = document.getElementById('btnSimulator');
+    const btnClose = document.getElementById('simClose');
+    const btnStart = document.getElementById('simStartBtn');
+    const btnStop = document.getElementById('simStopBtn');
+    const btnClear = document.getElementById('simClearBtn');
+
+    if (btnSim) btnSim.addEventListener('click', toggleSimulator);
+    if (btnClose) btnClose.addEventListener('click', () => {
+        document.getElementById('simPanel').classList.remove('open');
+        exitSimulator();
+    });
+    if (btnStart) btnStart.addEventListener('click', startSimPlayback);
+    if (btnStop) btnStop.addEventListener('click', () => {
+        stopSimPlayback();
+        enterSimPlanning();
+    });
+    if (btnClear) btnClear.addEventListener('click', clearSimRoute);
+}
+
+// ============================================================
 // Main Initialization
 // ============================================================
 
@@ -2467,6 +3074,9 @@ async function init() {
 
     // Setup driving controls (GPS, voice, driving mode)
     setupDriveControls();
+
+    // Setup simulator
+    setupSimulator();
 
     // Register service worker for PWA
     registerServiceWorker();
