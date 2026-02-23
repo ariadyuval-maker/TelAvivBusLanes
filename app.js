@@ -3338,6 +3338,285 @@ function setupSimulator() {
 }
 
 // ============================================================
+// Signalized Junctions — Fetch & Split
+// ============================================================
+
+/**
+ * Fetch all signalized junction points from Layer 547.
+ * Returns array of { name, lat, lng }.
+ */
+async function fetchSignalizedJunctions() {
+    const baseUrl = 'https://gisn.tel-aviv.gov.il/arcgis/rest/services/IView2/MapServer/547';
+    let all = [];
+    let offset = 0;
+    const batchSize = 2000;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = new URLSearchParams({
+            where: '1=1',
+            outFields: 'shem_tzomet_win',
+            outSR: '4326',
+            f: 'json',
+            resultOffset: offset,
+            resultRecordCount: batchSize
+        });
+        try {
+            const resp = await fetch(`${baseUrl}/query?${params}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (data.error) throw new Error(data.error.message || 'ArcGIS error');
+            if (data.features && data.features.length > 0) {
+                data.features.forEach(f => {
+                    const g = f.geometry;
+                    if (g && g.x != null && g.y != null) {
+                        all.push({
+                            name: (f.attributes.shem_tzomet_win || '').trim(),
+                            lat: g.y,
+                            lng: g.x
+                        });
+                    }
+                });
+                offset += data.features.length;
+                hasMore = data.exceededTransferLimit === true;
+            } else {
+                hasMore = false;
+            }
+        } catch (e) {
+            console.error('Error fetching junctions:', e);
+            hasMore = false;
+        }
+    }
+    console.log(`Fetched ${all.length} signalized junctions from Layer 547`);
+    return all;
+}
+
+/**
+ * Split bus lane features at signalized junction points.
+ *
+ * For each feature's polyline, project every junction onto the line.
+ * If the projection is within 25 m, record the parametric position (0-1).
+ * Then split the polyline at those positions into sub-features.
+ *
+ * Sub-features inherit the parent's attributes and get:
+ *   - oid  = "<parentOid>_<subIndex>"
+ *   - _parentOid  = original numeric oid
+ *   - _subIndex   = 0, 1, 2 …
+ *   - from_street / to_street updated from junction names when available
+ */
+function splitFeaturesAtJunctions(features, junctions) {
+    if (!junctions || junctions.length === 0) return features;
+
+    const SNAP_DIST = 25;        // metres — max distance to consider a junction "on" the lane
+    const ENDPOINT_SKIP = 0.05;  // skip junctions within 5 % of an endpoint (already a natural break)
+
+    // Haversine helpers (metres)
+    function _deg2rad(d) { return d * Math.PI / 180; }
+    function _haversine(lat1, lng1, lat2, lng2) {
+        const R = 6371000;
+        const dLat = _deg2rad(lat2 - lat1);
+        const dLng = _deg2rad(lng2 - lng1);
+        const a = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(_deg2rad(lat1)) * Math.cos(_deg2rad(lat2)) * Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // Project point P onto segment A→B.  Returns { t, dist } where t ∈ [0,1].
+    function _projectOntoSegment(pLat, pLng, aLat, aLng, bLat, bLng) {
+        const dx = bLng - aLng, dy = bLat - aLat;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) return { t: 0, dist: _haversine(pLat, pLng, aLat, aLng) };
+        let t = ((pLng - aLng) * dx + (pLat - aLat) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        const projLat = aLat + t * dy;
+        const projLng = aLng + t * dx;
+        return { t, dist: _haversine(pLat, pLng, projLat, projLng) };
+    }
+
+    // Given a polyline (array of rings from ArcGIS paths), compute cumulative
+    // distances along it and interpolate a parametric position (0-1 along total length).
+    // Returns the closest projection { param, dist, junctionName }.
+    function _projectOntoPolyline(jLat, jLng, rings) {
+        let bestDist = Infinity, bestParam = -1;
+        let cumLen = 0;
+        const segStarts = []; // cumulative length at start of each segment
+        const segments = [];
+
+        // Flatten rings into segments with cumulative lengths
+        for (const ring of rings) {
+            for (let i = 0; i < ring.length - 1; i++) {
+                const [aLng, aLat] = ring[i];
+                const [bLng, bLat] = ring[i + 1];
+                const segLen = _haversine(aLat, aLng, bLat, bLng);
+                segStarts.push(cumLen);
+                segments.push({ aLat, aLng, bLat, bLng, segLen });
+                cumLen += segLen;
+            }
+        }
+        if (cumLen === 0) return null;
+
+        for (let i = 0; i < segments.length; i++) {
+            const s = segments[i];
+            const proj = _projectOntoSegment(jLat, jLng, s.aLat, s.aLng, s.bLat, s.bLng);
+            if (proj.dist < bestDist) {
+                bestDist = proj.dist;
+                bestParam = (segStarts[i] + proj.t * s.segLen) / cumLen;
+            }
+        }
+        return { param: bestParam, dist: bestDist };
+    }
+
+    // Interpolate a point on the polyline at parametric position p ∈ [0,1].
+    function _interpolatePolyline(rings, p) {
+        // Build flat list of points + cumulative lengths
+        const pts = [];
+        let cumLen = 0;
+        for (const ring of rings) {
+            for (let i = 0; i < ring.length; i++) {
+                const [lng, lat] = ring[i];
+                if (pts.length > 0) {
+                    const prev = pts[pts.length - 1];
+                    cumLen += _haversine(prev.lat, prev.lng, lat, lng);
+                }
+                pts.push({ lat, lng, cum: cumLen });
+            }
+        }
+        const totalLen = cumLen;
+        const targetLen = p * totalLen;
+
+        for (let i = 0; i < pts.length - 1; i++) {
+            if (pts[i + 1].cum >= targetLen) {
+                const segLen = pts[i + 1].cum - pts[i].cum;
+                const t = segLen > 0 ? (targetLen - pts[i].cum) / segLen : 0;
+                return [
+                    pts[i].lng + t * (pts[i + 1].lng - pts[i].lng),
+                    pts[i].lat + t * (pts[i + 1].lat - pts[i].lat)
+                ];
+            }
+        }
+        const last = pts[pts.length - 1];
+        return [last.lng, last.lat];
+    }
+
+    // Slice polyline between parametric positions p0 and p1 (0-1).
+    // Returns ArcGIS-style paths: [[[lng,lat], …]].
+    function _slicePolyline(rings, p0, p1) {
+        const pts = [];
+        let cumLen = 0;
+        for (const ring of rings) {
+            for (let i = 0; i < ring.length; i++) {
+                const [lng, lat] = ring[i];
+                if (pts.length > 0) {
+                    const prev = pts[pts.length - 1];
+                    cumLen += _haversine(prev.lat, prev.lng, lat, lng);
+                }
+                pts.push({ lat, lng, cum: cumLen });
+            }
+        }
+        const totalLen = cumLen;
+        const startLen = p0 * totalLen;
+        const endLen = p1 * totalLen;
+        const result = [];
+
+        // Add interpolated start point
+        const startPt = _interpolatePolyline(rings, p0);
+        result.push(startPt);
+
+        // Add all original points that fall between p0 and p1
+        for (let i = 0; i < pts.length; i++) {
+            if (pts[i].cum > startLen + 0.01 && pts[i].cum < endLen - 0.01) {
+                result.push([pts[i].lng, pts[i].lat]);
+            }
+        }
+
+        // Add interpolated end point
+        const endPt = _interpolatePolyline(rings, p1);
+        result.push(endPt);
+
+        return [result];
+    }
+
+    const output = [];
+
+    for (const feature of features) {
+        const geom = feature.geometry;
+        if (!geom || !geom.paths || geom.paths.length === 0) {
+            output.push(feature);
+            continue;
+        }
+
+        // Find junctions that project onto this polyline within SNAP_DIST
+        const splits = []; // { param, name }
+        for (const j of junctions) {
+            const proj = _projectOntoPolyline(j.lat, j.lng, geom.paths);
+            if (!proj) continue;
+            if (proj.dist <= SNAP_DIST && proj.param > ENDPOINT_SKIP && proj.param < (1 - ENDPOINT_SKIP)) {
+                splits.push({ param: proj.param, name: j.name });
+            }
+        }
+
+        if (splits.length === 0) {
+            // No junctions hit this feature — keep it unchanged
+            output.push(feature);
+            continue;
+        }
+
+        // Sort splits by parametric position
+        splits.sort((a, b) => a.param - b.param);
+
+        // Remove duplicates that are very close (< 1 % apart)
+        const uniqueSplits = [splits[0]];
+        for (let i = 1; i < splits.length; i++) {
+            if (splits[i].param - uniqueSplits[uniqueSplits.length - 1].param > 0.01) {
+                uniqueSplits.push(splits[i]);
+            }
+        }
+
+        // Build sub-features between consecutive split points
+        const breakpoints = [0, ...uniqueSplits.map(s => s.param), 1];
+        const parentOid = feature.attributes.oid || feature.attributes.OBJECTID || 0;
+
+        for (let i = 0; i < breakpoints.length - 1; i++) {
+            const p0 = breakpoints[i];
+            const p1 = breakpoints[i + 1];
+            const subPaths = _slicePolyline(geom.paths, p0, p1);
+
+            // Determine from/to street names for this sub-segment
+            let fromStreet = feature.attributes.from_street || '';
+            let toStreet = feature.attributes.to_street || '';
+
+            // Junction at the start of this segment (if not the very first)
+            if (i > 0 && uniqueSplits[i - 1]) {
+                fromStreet = uniqueSplits[i - 1].name || fromStreet;
+            }
+            // Junction at the end of this segment (if not the very last)
+            if (i < uniqueSplits.length && uniqueSplits[i]) {
+                toStreet = uniqueSplits[i].name || toStreet;
+            }
+
+            const subFeature = {
+                attributes: {
+                    ...feature.attributes,
+                    oid: `${parentOid}_${i}`,
+                    _parentOid: parentOid,
+                    _subIndex: i,
+                    from_street: fromStreet,
+                    to_street: toStreet
+                },
+                geometry: {
+                    ...geom,
+                    paths: subPaths
+                }
+            };
+            output.push(subFeature);
+        }
+    }
+
+    console.log(`🔪 Split ${features.length} raw features → ${output.length} sub-features (${output.length - features.length} new splits)`);
+    return output;
+}
+
+// ============================================================
 // Main Initialization
 // ============================================================
 
