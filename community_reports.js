@@ -25,6 +25,10 @@ let _sharedReports  = [];
 let _sharedSha      = null;   // SHA of the file in GitHub (needed for updates)
 let _syncInProgress = false;
 
+// Sign overrides (must be declared before IIFE which calls rebuildSignOverrides)
+var SIGN_OVERRIDES = {};
+var SIGN_OVERRIDES_BY_OID = {};
+
 // ============================================================
 // Initialization — load from local cache (synchronous, fast)
 // ============================================================
@@ -363,9 +367,6 @@ function _updateSyncUI(state) {
 // ============================================================
 // Sign Overrides Index
 // ============================================================
-
-var SIGN_OVERRIDES = {};
-var SIGN_OVERRIDES_BY_OID = {};
 
 function rebuildSignOverrides() {
     SIGN_OVERRIDES = {};

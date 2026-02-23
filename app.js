@@ -2445,8 +2445,12 @@ function zoomToReport(reportId) {
 
 function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('./sw.js')
-            .then(reg => console.log('✅ Service Worker registered'))
+        navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+            .then(reg => {
+                console.log('✅ Service Worker registered');
+                // Force check for updates
+                reg.update();
+            })
             .catch(err => console.warn('SW registration failed:', err));
     }
 }
