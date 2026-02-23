@@ -829,10 +829,18 @@ const PROXIMITY_METERS = 200; // alert when within 200m of a blocked lane
 // ------ Driving Mode State ------
 let drivingMode = false;
 
-// ------ GPS Heading State ------
-let gpsHistory = []; // last N positions: { lat, lng, time }
-const GPS_HISTORY_SIZE = 5;
-let currentHeading = null; // degrees, 0=north, 90=east
+// ------ GPS Low-Pass Filter & Heading State ------
+const GPS_LP_ALPHA = 0.35;          // EMA smoothing factor (0<α<1, lower = smoother)
+const GPS_MIN_SPEED_FOR_HEADING = 1.5;  // m/s (~5.4 km/h) — below this, keep last heading
+const GPS_MIN_MOVE_METERS = 3;      // ignore jitter smaller than this
+let filteredLat = null;
+let filteredLng = null;
+let filteredSpeed = 0;               // m/s, smoothed
+let filteredBearing = null;          // degrees 0-360, smoothed
+let lastFilteredTime = 0;            // timestamp of last accepted filtered position
+let prevFilteredLat = null;          // previous filtered position for speed calc
+let prevFilteredLng = null;
+let currentHeading = null;           // final heading used for car icon
 
 /**
  * Start watching GPS position
@@ -874,29 +882,55 @@ function stopGps() {
     if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
     if (userAccuracyCircle) { map.removeLayer(userAccuracyCircle); userAccuracyCircle = null; }
     userLatLng = null;
+
+    // Reset low-pass filter state
+    filteredLat = null;
+    filteredLng = null;
+    filteredSpeed = 0;
+    filteredBearing = null;
+    lastFilteredTime = 0;
+    prevFilteredLat = null;
+    prevFilteredLng = null;
+    currentHeading = null;
 }
 
 /**
- * Handle GPS position update
+ * Handle GPS position update — applies an EMA low-pass filter to
+ * smooth out GPS measurement noise. Only filtered positions are used
+ * for the map marker, heading, speed and proximity alerts.
  */
 function onGpsPosition(pos) {
-    const lat = pos.coords.latitude;
-    const lng = pos.coords.longitude;
+    const rawLat = pos.coords.latitude;
+    const rawLng = pos.coords.longitude;
     const accuracy = pos.coords.accuracy;
-    userLatLng = L.latLng(lat, lng);
-
-    // Store GPS history for heading calculation
     const now = Date.now();
-    gpsHistory.push({ lat, lng, time: now });
-    if (gpsHistory.length > GPS_HISTORY_SIZE) gpsHistory.shift();
 
-    // Calculate heading from GPS history
+    // --- Low-pass filter (Exponential Moving Average) ---
+    if (filteredLat === null) {
+        // First reading — initialise filter
+        filteredLat = rawLat;
+        filteredLng = rawLng;
+        lastFilteredTime = now;
+    } else {
+        // Adaptive alpha: trust accurate readings more
+        const alpha = accuracy < 15 ? GPS_LP_ALPHA : GPS_LP_ALPHA * 0.5;
+        filteredLat = filteredLat + alpha * (rawLat - filteredLat);
+        filteredLng = filteredLng + alpha * (rawLng - filteredLng);
+    }
+
+    // --- Filtered position ---
+    userLatLng = L.latLng(filteredLat, filteredLng);
+
+    // --- Compute smoothed speed & bearing from filtered positions ---
+    updateFilteredSpeedAndBearing(filteredLat, filteredLng, now);
+
+    // --- Heading from filtered bearing (or one-way street) ---
     currentHeading = calculateHeading(userLatLng);
 
-    // Update / create user marker
+    // --- Update / create user marker ---
     updateUserMarker();
 
-    // Update accuracy circle
+    // --- Update accuracy circle ---
     if (!userAccuracyCircle) {
         userAccuracyCircle = L.circle(userLatLng, {
             radius: accuracy,
@@ -908,16 +942,66 @@ function onGpsPosition(pos) {
         userAccuracyCircle.setRadius(accuracy);
     }
 
-    // Auto-follow
+    // --- Auto-follow ---
     if (followMode) {
         map.setView(userLatLng, Math.max(map.getZoom(), 16));
     }
 
-    // Check proximity to blocked lanes and cameras
+    // --- Proximity alerts ---
     if (voiceEnabled) {
         if (allFeatures.length > 0) checkProximity(userLatLng);
         if (allCameras.length > 0) checkCameraProximity(userLatLng);
     }
+}
+
+/**
+ * Compute smoothed speed (m/s) and bearing (degrees) from the series
+ * of filtered lat/lng positions.
+ */
+function updateFilteredSpeedAndBearing(lat, lng, now) {
+    if (prevFilteredLat === null) {
+        // First update — just store
+        prevFilteredLat = lat;
+        prevFilteredLng = lng;
+        lastFilteredTime = now;
+        return;
+    }
+
+    const dtSec = (now - lastFilteredTime) / 1000;
+    if (dtSec <= 0) return;
+
+    const dist = L.latLng(prevFilteredLat, prevFilteredLng).distanceTo(L.latLng(lat, lng));
+
+    // Ignore tiny jitter
+    if (dist < GPS_MIN_MOVE_METERS) {
+        lastFilteredTime = now;
+        return;
+    }
+
+    // Instantaneous speed from filtered delta
+    const instantSpeed = dist / dtSec;
+    // Smooth the speed itself with the same EMA
+    filteredSpeed = filteredSpeed === 0
+        ? instantSpeed
+        : filteredSpeed + GPS_LP_ALPHA * (instantSpeed - filteredSpeed);
+
+    // Bearing between consecutive filtered positions
+    if (filteredSpeed >= GPS_MIN_SPEED_FOR_HEADING) {
+        const rawBearing = bearingBetween(prevFilteredLat, prevFilteredLng, lat, lng);
+        if (filteredBearing === null) {
+            filteredBearing = rawBearing;
+        } else {
+            // Smooth bearing (handle 0/360 wrap)
+            let diff = rawBearing - filteredBearing;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+            filteredBearing = (filteredBearing + GPS_LP_ALPHA * diff + 360) % 360;
+        }
+    }
+
+    prevFilteredLat = lat;
+    prevFilteredLng = lng;
+    lastFilteredTime = now;
 }
 
 /**
@@ -964,10 +1048,10 @@ function updateUserMarker() {
 }
 
 /**
- * Calculate heading (bearing) in degrees from GPS history.
+ * Calculate heading (bearing) in degrees.
  * Strategy:
  * 1. If on a one-way street (direction_name is set), use that direction.
- * 2. Otherwise, calculate bearing from last 3+ GPS points.
+ * 2. Otherwise, use the low-pass filtered bearing computed from filtered GPS.
  * Returns: degrees (0=north, 90=east, 180=south, 270=west) or null.
  */
 function calculateHeading(currentPos) {
@@ -977,19 +1061,13 @@ function calculateHeading(currentPos) {
         return nearestDir;
     }
 
-    // Strategy 2: Calculate from GPS history (need at least 3 points)
-    if (gpsHistory.length < 3) return currentHeading; // keep previous heading
+    // Strategy 2: Use filtered bearing (already smoothed by low-pass filter)
+    if (filteredBearing !== null && filteredSpeed >= GPS_MIN_SPEED_FOR_HEADING) {
+        return filteredBearing;
+    }
 
-    // Use the oldest and newest of the last 3 points
-    const recent = gpsHistory.slice(-3);
-    const p1 = recent[0];
-    const p3 = recent[2];
-
-    // Skip if not enough movement (less than ~10 meters)
-    const dist = L.latLng(p1.lat, p1.lng).distanceTo(L.latLng(p3.lat, p3.lng));
-    if (dist < 10) return currentHeading; // keep previous heading if stationary
-
-    return bearingBetween(p1.lat, p1.lng, p3.lat, p3.lng);
+    // Below speed threshold — keep previous heading
+    return currentHeading;
 }
 
 /**
