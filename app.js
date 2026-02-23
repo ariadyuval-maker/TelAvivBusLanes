@@ -2457,7 +2457,7 @@ function registerServiceWorker() {
 
 let simActive = false;          // simulator panel open?
 let simPlanning = true;         // true = planning phase, false = playing
-let simRoute = [];              // ordered array of features (segments)
+let simRoute = [];              // ordered array of route items: { type:'segment'|'waypoint', feature?, latlng?, label? }
 let simPlaying = false;         // animation running?
 let simAnimFrame = null;        // requestAnimationFrame id
 let simCarMarker = null;        // the simulator car marker
@@ -2465,6 +2465,7 @@ let simHighlightLayer = null;   // layer group for route highlights
 let simCurrentIdx = 0;          // current segment index during playback
 let simProgress = 0;            // 0..1 progress along current segment
 let simLastTime = 0;            // last animation timestamp
+let _simMapClickHandler = null; // reference to map click handler
 const SIM_SPEED_KMH = 40;      // km/h
 const SIM_SPEED_MPS = SIM_SPEED_KMH / 3.6;  // ~11.11 m/s
 
@@ -2486,23 +2487,29 @@ function toggleSimulator() {
 }
 
 /**
- * Enter planning phase — click segments on the map to add them.
+ * Enter planning phase — click anywhere on map to add waypoints/segments.
  */
 function enterSimPlanning() {
     simPlanning = true;
     simPlaying = false;
     document.body.classList.add('sim-planning');
-    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ על מקטעים במפה';
+    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ בכל מקום על המפה';
     document.getElementById('simStartBtn').style.display = '';
     document.getElementById('simStopBtn').style.display = 'none';
 
-    // Make polylines clickable for route building
-    laneLayerGroup.eachLayer(layer => {
-        layer.off('click.sim');
-        layer.on('click.sim', onSimSegmentClick);
-    });
+    // Use map click for route building
+    _removeSimMapClick();
+    _simMapClickHandler = function(e) { onSimMapClick(e); };
+    map.on('click', _simMapClickHandler);
 
     renderSimRouteList();
+}
+
+function _removeSimMapClick() {
+    if (_simMapClickHandler) {
+        map.off('click', _simMapClickHandler);
+        _simMapClickHandler = null;
+    }
 }
 
 /**
@@ -2516,8 +2523,8 @@ function exitSimulator() {
     document.body.classList.remove('sim-planning');
     document.getElementById('btnSimulator').classList.remove('active');
 
-    // Remove click handlers
-    laneLayerGroup.eachLayer(layer => layer.off('click.sim'));
+    // Remove map click handler
+    _removeSimMapClick();
 
     // Remove highlight layer
     if (simHighlightLayer) {
@@ -2535,16 +2542,16 @@ function exitSimulator() {
 }
 
 /**
- * Handle click on a lane segment during planning phase.
+ * Handle click on the map during planning phase.
+ * If near a bus lane segment (< 40m), add that segment.
+ * Otherwise, add a free waypoint at the click location.
  */
-function onSimSegmentClick(e) {
+function onSimMapClick(e) {
     if (!simPlanning) return;
 
-    // Find which feature this polyline belongs to
-    const clickedLayer = e.target;
     const clickPt = e.latlng;
 
-    // Find closest feature to the click
+    // Check if click is near a bus lane segment
     let bestFeature = null;
     let bestDist = Infinity;
     for (const f of allFeatures) {
@@ -2555,20 +2562,31 @@ function onSimSegmentClick(e) {
             bestFeature = f;
         }
     }
-    if (!bestFeature || bestDist > 50) return;
 
-    // Don't add duplicates
-    if (simRoute.some(f => f.attributes.oid === bestFeature.attributes.oid)) {
-        showBanner('⚠️ מקטע זה כבר במסלול');
-        return;
+    if (bestFeature && bestDist < 40) {
+        // Check duplicate bus lane segments
+        if (simRoute.some(item => item.type === 'segment' && item.feature.attributes.oid === bestFeature.attributes.oid)) {
+            showBanner('⚠️ מקטע זה כבר במסלול');
+            return;
+        }
+        const a = bestFeature.attributes;
+        simRoute.push({
+            type: 'segment',
+            feature: bestFeature,
+            label: `${a.street_name || '?'}  (${a.from_street || '?'} → ${a.to_street || '?'})`
+        });
+    } else {
+        // Free waypoint — any street
+        simRoute.push({
+            type: 'waypoint',
+            latlng: [clickPt.lat, clickPt.lng],
+            label: `📍 ${clickPt.lat.toFixed(5)}, ${clickPt.lng.toFixed(5)}`
+        });
     }
 
-    simRoute.push(bestFeature);
     renderSimRouteList();
     updateSimHighlight();
     updateSimStartButton();
-
-    L.DomEvent.stopPropagation(e);
 }
 
 /**
@@ -2589,27 +2607,39 @@ function renderSimRouteList() {
     if (!container) return;
 
     if (simRoute.length === 0) {
-        container.innerHTML = '<div class="sim-empty">לחץ על נתיבים במפה כדי לבנות מסלול</div>';
+        container.innerHTML = '<div class="sim-empty">לחץ בכל מקום על המפה כדי לבנות מסלול.<br>ליד נתיב נת"צ — יתווסף המקטע.<br>בכל מקום אחר — נקודת ציון חופשית.</div>';
         return;
     }
 
-    container.innerHTML = simRoute.map((f, i) => {
-        const a = f.attributes;
-        const now = new Date();
-        const status = getLaneStatus(f, now);
-        const blockedClass = status.blocked ? ' sim-blocked' : '';
+    container.innerHTML = simRoute.map((item, i) => {
         const activeClass = (!simPlanning && simPlaying && i === simCurrentIdx) ? ' active' : '';
-        const statusEmoji = status.blocked ? '🔴' : (status.category === 'unknown' ? '⚪' : '🟢');
         const removeBtn = simPlanning ? `<button class="seg-remove" onclick="simRemoveSegment(${i})">✕</button>` : '';
 
-        return `<div class="sim-seg-item${blockedClass}${activeClass}" id="sim-seg-${i}">
-            <div class="seg-num">${i + 1}</div>
-            <div class="seg-info">
-                <div class="seg-street">${statusEmoji} ${a.street_name || '?'}</div>
-                <div class="seg-section">${a.from_street || '?'} → ${a.to_street || '?'}</div>
-            </div>
-            ${removeBtn}
-        </div>`;
+        if (item.type === 'segment') {
+            const a = item.feature.attributes;
+            const now = new Date();
+            const status = getLaneStatus(item.feature, now);
+            const blockedClass = status.blocked ? ' sim-blocked' : '';
+            const statusEmoji = status.blocked ? '🔴' : (status.category === 'unknown' ? '⚪' : '🟢');
+            return `<div class="sim-seg-item${blockedClass}${activeClass}" id="sim-seg-${i}">
+                <div class="seg-num">${i + 1}</div>
+                <div class="seg-info">
+                    <div class="seg-street">${statusEmoji} ${a.street_name || '?'}</div>
+                    <div class="seg-section">${a.from_street || '?'} → ${a.to_street || '?'}</div>
+                </div>
+                ${removeBtn}
+            </div>`;
+        } else {
+            // waypoint
+            return `<div class="sim-seg-item${activeClass}" id="sim-seg-${i}">
+                <div class="seg-num" style="background:#f39c12;">${i + 1}</div>
+                <div class="seg-info">
+                    <div class="seg-street">📍 נקודת ציון</div>
+                    <div class="seg-section">${item.latlng[0].toFixed(5)}, ${item.latlng[1].toFixed(5)}</div>
+                </div>
+                ${removeBtn}
+            </div>`;
+        }
     }).join('');
 }
 
@@ -2622,30 +2652,59 @@ function updateSimHighlight() {
     }
     simHighlightLayer = L.layerGroup().addTo(map);
 
-    simRoute.forEach((f, i) => {
-        if (!f.geometry || !f.geometry.paths) return;
-        const latLngs = arcgisPathsToLatLngs(f.geometry.paths);
-        latLngs.forEach(path => {
-            L.polyline(path, {
-                color: '#f1c40f',
-                weight: 8,
-                opacity: 0.8,
-                dashArray: '10 6'
+    const allPts = [];
+
+    simRoute.forEach((item, i) => {
+        if (item.type === 'segment' && item.feature.geometry && item.feature.geometry.paths) {
+            const latLngs = arcgisPathsToLatLngs(item.feature.geometry.paths);
+            latLngs.forEach(path => {
+                L.polyline(path, {
+                    color: '#f1c40f',
+                    weight: 8,
+                    opacity: 0.8,
+                    dashArray: '10 6'
+                }).addTo(simHighlightLayer);
+                path.forEach(pt => allPts.push(pt));
+            });
+        } else if (item.type === 'waypoint') {
+            const pt = item.latlng;
+            allPts.push(pt);
+            L.circleMarker(pt, {
+                radius: 8,
+                color: '#f39c12',
+                fillColor: '#f1c40f',
+                fillOpacity: 0.9,
+                weight: 2
             }).addTo(simHighlightLayer);
-        });
+        }
     });
 
-    // Fit map to route
-    if (simRoute.length > 0) {
-        const allPts = [];
-        simRoute.forEach(f => {
-            if (f.geometry && f.geometry.paths) {
-                f.geometry.paths.forEach(p => p.forEach(c => allPts.push([c[1], c[0]])));
+    // Draw connecting lines between consecutive route items
+    if (simRoute.length >= 2) {
+        const centers = simRoute.map(item => {
+            if (item.type === 'waypoint') return item.latlng;
+            if (item.feature && item.feature.geometry && item.feature.geometry.paths) {
+                const p = item.feature.geometry.paths;
+                const all = [];
+                p.forEach(path => path.forEach(c => all.push([c[1], c[0]])));
+                const mid = all[Math.floor(all.length / 2)];
+                return mid || all[0];
             }
-        });
-        if (allPts.length > 0) {
-            map.fitBounds(L.latLngBounds(allPts).pad(0.2));
+            return null;
+        }).filter(Boolean);
+        if (centers.length >= 2) {
+            L.polyline(centers, {
+                color: '#f39c12',
+                weight: 3,
+                opacity: 0.5,
+                dashArray: '4 8'
+            }).addTo(simHighlightLayer);
         }
+    }
+
+    // Fit map to route
+    if (allPts.length > 0) {
+        map.fitBounds(L.latLngBounds(allPts).pad(0.2));
     }
 }
 
@@ -2662,19 +2721,32 @@ function buildSimPath() {
     const points = [];
 
     for (let i = 0; i < simRoute.length; i++) {
-        const f = simRoute[i];
-        if (!f.geometry || !f.geometry.paths) continue;
+        const item = simRoute[i];
 
-        // Flatten all paths into one array of [lat, lng]
+        if (item.type === 'waypoint') {
+            const wp = item.latlng;
+            if (points.length > 0) {
+                const last = points[points.length - 1];
+                if (L.latLng(last).distanceTo(L.latLng(wp)) >= 5) {
+                    points.push(wp);
+                }
+            } else {
+                points.push(wp);
+            }
+            continue;
+        }
+
+        // segment type
+        const f = item.feature;
+        if (!f || !f.geometry || !f.geometry.paths) continue;
+
         let segPts = [];
         f.geometry.paths.forEach(p => {
             p.forEach(c => segPts.push([c[1], c[0]]));
         });
-
         if (segPts.length === 0) continue;
 
         if (points.length > 0 && segPts.length >= 2) {
-            // Check if segment needs to be reversed to connect to previous end
             const lastPt = points[points.length - 1];
             const distToStart = L.latLng(lastPt).distanceTo(L.latLng(segPts[0]));
             const distToEnd = L.latLng(lastPt).distanceTo(L.latLng(segPts[segPts.length - 1]));
@@ -2683,7 +2755,6 @@ function buildSimPath() {
             }
         }
 
-        // Add points (skip first if it duplicates last)
         for (let j = 0; j < segPts.length; j++) {
             if (j === 0 && points.length > 0) {
                 const last = points[points.length - 1];
@@ -2763,8 +2834,8 @@ function startSimPlayback() {
     document.getElementById('simStartBtn').style.display = 'none';
     document.getElementById('simStopBtn').style.display = '';
 
-    // Remove planning click handlers
-    laneLayerGroup.eachLayer(layer => layer.off('click.sim'));
+    // Remove map click handler during playback
+    _removeSimMapClick();
 
     // Build path
     simPath = buildSimPath();
@@ -2774,12 +2845,14 @@ function startSimPlayback() {
     simCurrentIdx = 0;
     simAlertedSegments = new Set();
 
-    // Build segment boundaries (cumulative point count per route segment)
+    // Build segment boundaries (cumulative point count per route item)
     simSegBoundaries = [];
     let ptCount = 0;
-    for (const f of simRoute) {
-        if (f.geometry && f.geometry.paths) {
-            f.geometry.paths.forEach(p => ptCount += p.length);
+    for (const item of simRoute) {
+        if (item.type === 'segment' && item.feature && item.feature.geometry && item.feature.geometry.paths) {
+            item.feature.geometry.paths.forEach(p => ptCount += p.length);
+        } else if (item.type === 'waypoint') {
+            ptCount += 1;
         }
         simSegBoundaries.push(ptCount);
     }
@@ -2862,9 +2935,15 @@ function figureOutCurrentSegment(lat, lng) {
     let bestDist = Infinity;
 
     for (let i = 0; i < simRoute.length; i++) {
-        const f = simRoute[i];
-        if (!f.geometry || !f.geometry.paths) continue;
-        const d = distanceToPolyline(pos, f.geometry.paths);
+        const item = simRoute[i];
+        let d;
+        if (item.type === 'segment' && item.feature && item.feature.geometry) {
+            d = distanceToPolyline(pos, item.feature.geometry.paths);
+        } else if (item.type === 'waypoint') {
+            d = pos.distanceTo(L.latLng(item.latlng));
+        } else {
+            continue;
+        }
         if (d < bestDist) {
             bestDist = d;
             bestIdx = i;
@@ -2879,7 +2958,10 @@ function figureOutCurrentSegment(lat, lng) {
 function checkSimAlerts(lat, lng) {
     if (simCurrentIdx >= simRoute.length) return;
 
-    const feature = simRoute[simCurrentIdx];
+    const item = simRoute[simCurrentIdx];
+    if (item.type !== 'segment' || !item.feature) return;  // no alerts for waypoints
+
+    const feature = item.feature;
     const now = new Date();
     const status = getLaneStatus(feature, now);
     const attrs = feature.attributes;
@@ -2905,7 +2987,7 @@ function checkSimAlerts(lat, lng) {
         if (!mapping) continue;
 
         const onRoute = mapping.segments.some(seg =>
-            simRoute.some(rf => rf.attributes.oid === seg.attributes.oid)
+            simRoute.some(item => item.type === 'segment' && item.feature && item.feature.attributes.oid === seg.attributes.oid)
         );
         if (!onRoute) continue;
 
@@ -2967,16 +3049,10 @@ function updateSimStatus() {
         const secs = Math.round(timeRemSec % 60);
         el.textContent = `${pct}% | ${Math.round(simTotalDist)}מ׳ | נותרו ${mins}:${secs.toString().padStart(2, '0')}`;
     } else {
-        const totalM = simRoute.reduce((sum, f) => {
-            if (!f.geometry || !f.geometry.paths) return sum;
-            let len = 0;
-            f.geometry.paths.forEach(p => {
-                for (let i = 1; i < p.length; i++) {
-                    len += L.latLng(p[i - 1][1], p[i - 1][0]).distanceTo(L.latLng(p[i][1], p[i][0]));
-                }
-            });
-            return sum + len;
-        }, 0);
+        // Calculate total route distance from the built path
+        const tempPath = buildSimPath();
+        const tempDists = buildCumulativeDistances(tempPath);
+        const totalM = tempDists.length > 0 ? tempDists[tempDists.length - 1] : 0;
         const timeSec = totalM / SIM_SPEED_MPS;
         const mins = Math.floor(timeSec / 60);
         const secs = Math.round(timeSec % 60);
@@ -3030,7 +3106,7 @@ function clearSimRoute() {
     renderSimRouteList();
     updateSimStartButton();
     updateSimStatus();
-    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ על מקטעים במפה';
+    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ בכל מקום על המפה';
     document.getElementById('simStartBtn').style.display = '';
     document.getElementById('simStopBtn').style.display = 'none';
 }
@@ -3039,7 +3115,15 @@ function clearSimRoute() {
  * Setup simulator event listeners.
  */
 function setupSimulator() {
+    // Simulator is desktop-only — hide on mobile/tablet
+    const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        || ('ontouchstart' in window && window.innerWidth < 900);
     const btnSim = document.getElementById('btnSimulator');
+    if (isMobile) {
+        if (btnSim) btnSim.style.display = 'none';
+        return;
+    }
+
     const btnClose = document.getElementById('simClose');
     const btnStart = document.getElementById('simStartBtn');
     const btnStop = document.getElementById('simStopBtn');
