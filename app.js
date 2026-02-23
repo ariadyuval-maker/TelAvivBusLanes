@@ -1279,15 +1279,18 @@ function openPhotoModal() {
     document.getElementById('photoPreview').src = '';
     document.getElementById('gpsStatus').innerHTML = '';
     document.getElementById('reportStreet').value = '';
-    document.getElementById('reportSection').value = '';
     document.getElementById('reportNotes').value = '';
     document.getElementById('btnSubmitReport').disabled = true;
+    clearSegmentPicker();
     document.getElementById('photoModal').classList.add('show');
 }
 
 function openPhotoModalForStreet(streetName) {
     openPhotoModal();
-    document.getElementById('reportStreet').value = streetName || '';
+    if (streetName) {
+        document.getElementById('reportStreet').value = streetName;
+        populateSegmentPicker(streetName);
+    }
     // Close any open popup
     map.closePopup();
 }
@@ -1387,7 +1390,7 @@ function autoDetectStreet(lat, lng) {
     const pos = L.latLng(lat, lng);
     let minDist = Infinity;
     let closestStreet = '';
-    let closestSection = '';
+    let closestOid = null;
 
     for (const feature of allFeatures) {
         if (!feature.geometry || !feature.geometry.paths) continue;
@@ -1395,17 +1398,23 @@ function autoDetectStreet(lat, lng) {
         if (dist < minDist) {
             minDist = dist;
             closestStreet = feature.attributes.street_name || '';
-            const from = feature.attributes.from_street || '';
-            const to = feature.attributes.to_street || '';
-            closestSection = from && to ? `${from} → ${to}` : '';
+            closestOid = feature.attributes.oid;
         }
     }
 
     if (closestStreet && minDist < 200) {
         const streetInput = document.getElementById('reportStreet');
-        const sectionInput = document.getElementById('reportSection');
-        if (!streetInput.value) streetInput.value = closestStreet;
-        if (!sectionInput.value && closestSection) sectionInput.value = closestSection;
+        if (!streetInput.value) {
+            streetInput.value = closestStreet;
+            populateSegmentPicker(closestStreet);
+        }
+        // Auto-select only the nearest segment
+        if (closestOid !== null) {
+            const checkboxes = document.querySelectorAll('#segmentPicker .segment-cb');
+            checkboxes.forEach(cb => {
+                cb.checked = parseInt(cb.value) === closestOid;
+            });
+        }
     }
 }
 
@@ -1426,13 +1435,101 @@ function buildStreetAutocomplete() {
     }
     datalist.innerHTML = [...streets].sort().map(s => `<option value="${s}">`).join('');
     const input = document.getElementById('reportStreet');
-    if (input) input.setAttribute('list', 'streetSuggestions');
+    if (input) {
+        input.setAttribute('list', 'streetSuggestions');
+        // When user picks or types a street, populate segment picker
+        input.addEventListener('change', () => populateSegmentPicker(input.value.trim()));
+        input.addEventListener('input', debounceSegmentPicker(input));
+    }
+}
+
+/** Debounce segment picker population on typing */
+function debounceSegmentPicker(input) {
+    let timer = null;
+    return () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            const val = input.value.trim();
+            if (val && getSegmentsForStreet(val).length > 0) {
+                populateSegmentPicker(val);
+            }
+        }, 400);
+    };
+}
+
+/**
+ * Get all GIS feature segments matching a street name.
+ * Returns array of { oid, from, to, dir, dirText, feature }
+ */
+function getSegmentsForStreet(streetName) {
+    if (!streetName || allFeatures.length === 0) return [];
+    const norm = normalizeStreet(streetName);
+    const aliased = STREET_ALIASES[norm] || norm;
+
+    return allFeatures.filter(f => {
+        const fName = normalizeStreet(f.attributes.street_name);
+        return fName === norm || fName === aliased || norm === fName;
+    }).map(f => {
+        const a = f.attributes;
+        const dirMap = { E: 'מזרח', W: 'מערב', N: 'צפון', S: 'דרום' };
+        return {
+            oid: a.oid,
+            from: a.from_street || '?',
+            to: a.to_street || '?',
+            dir: a.direction_name || '',
+            dirText: dirMap[a.direction_name] || '',
+            feature: f
+        };
+    });
+}
+
+/**
+ * Populate the segment picker with checkboxes for all segments of the given street.
+ */
+function populateSegmentPicker(streetName) {
+    const container = document.getElementById('segmentPicker');
+    const group = document.getElementById('segmentPickerGroup');
+    if (!container || !group) return;
+
+    const segments = getSegmentsForStreet(streetName);
+    if (segments.length === 0) {
+        group.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+
+    group.style.display = '';
+    container.innerHTML = segments.map(seg => {
+        const dirLabel = seg.dirText ? ` (${seg.dirText})` : '';
+        return `<label>
+            <input type="checkbox" class="segment-cb" value="${seg.oid}" checked>
+            <span>${seg.from} → ${seg.to}${dirLabel}</span>
+        </label>`;
+    }).join('');
+}
+
+/**
+ * Clear the segment picker.
+ */
+function clearSegmentPicker() {
+    const container = document.getElementById('segmentPicker');
+    const group = document.getElementById('segmentPickerGroup');
+    if (container) container.innerHTML = '';
+    if (group) group.style.display = 'none';
+}
+
+/**
+ * Get the list of selected segment OIDs from the picker.
+ */
+function getSelectedSegmentOids() {
+    const checkboxes = document.querySelectorAll('#segmentPicker .segment-cb:checked');
+    return Array.from(checkboxes).map(cb => parseInt(cb.value));
 }
 
 function submitReport() {
     const street = document.getElementById('reportStreet').value.trim();
-    const section = document.getElementById('reportSection').value.trim();
     const notes = document.getElementById('reportNotes').value.trim();
+    const selectedOids = getSelectedSegmentOids();
 
     if (!street) {
         alert('נא להזין שם רחוב');
@@ -1444,16 +1541,21 @@ function submitReport() {
         return;
     }
 
+    // Build section description from selected segments
+    const segments = getSegmentsForStreet(street);
+    const selectedSegments = segments.filter(s => selectedOids.includes(s.oid));
+    const sectionDesc = selectedSegments.map(s => `${s.from}→${s.to}`).join(', ');
+
     const report = {
         street: street,
-        section: section,
+        section: sectionDesc,
         notes: notes,
         lat: pendingReportData.lat,
         lng: pendingReportData.lng,
         gpsSource: pendingReportData.gpsSource,
         photoData: pendingReportData.photoData,
         decodedHours: null,
-        featureId: null
+        featureIds: selectedOids.length > 0 ? selectedOids : null
     };
 
     console.log('📋 submitReport: photoData size =', (report.photoData || '').length, 'bytes');
@@ -1541,6 +1643,7 @@ function renderReportCard(report) {
             </div>
             ${hasPhoto}
             <div class="report-card-meta">${date} · ${gpsInfo}</div>
+            ${report.featureIds && report.featureIds.length > 0 ? `<div class="report-card-meta">📍 ${report.featureIds.length} קטעים נבחרו</div>` : ''}
             ${report.section ? `<div class="report-card-meta">קטע: ${report.section}</div>` : ''}
             ${report.notes ? `<div class="report-card-meta">הערות: ${report.notes}</div>` : ''}
             ${decodedInfo}
@@ -1570,6 +1673,26 @@ function showDecodeForm(reportId) {
     const sat = h.sat ? h.sat.map(r => `${formatHour(r[0])}-${formatHour(r[1])}`).join(', ') : '';
     const allWeek = h.allWeek ? 'checked' : '';
 
+    // Build segment checkboxes for the decode form
+    const segments = getSegmentsForStreet(report.street);
+    const existingIds = report.featureIds || [];
+    let segmentHtml = '';
+    if (segments.length > 0) {
+        const segItems = segments.map(seg => {
+            const dirLabel = seg.dirText ? ` (${seg.dirText})` : '';
+            // If report already has featureIds, check only those; else check all
+            const isChecked = existingIds.length > 0 ? existingIds.includes(seg.oid) : true;
+            return `<label>
+                <input type="checkbox" class="decode-seg-cb-${reportId}" value="${seg.oid}" ${isChecked ? 'checked' : ''}>
+                <span>${seg.from} → ${seg.to}${dirLabel}</span>
+            </label>`;
+        }).join('');
+        segmentHtml = `
+            <label style="margin-top: 8px; font-weight: 700;">קטעים שהשלט חל עליהם:</label>
+            <div class="segment-picker">${segItems}</div>
+        `;
+    }
+
     formContainer.innerHTML = `
         <div class="decode-form">
             <div class="decode-help">הזן שעות הגבלה כפי שכתוב על השלט. פורמט: 07:00-22:00 (מופרד בפסיק אם יש כמה טווחים)</div>
@@ -1580,6 +1703,7 @@ function showDecodeForm(reportId) {
             <input type="text" id="decode-fri-${reportId}" value="${fri}" placeholder="07:00-17:00" dir="ltr">
             <label>שבת / חג:</label>
             <input type="text" id="decode-sat-${reportId}" value="${sat}" placeholder="" dir="ltr">
+            ${segmentHtml}
             <div class="decode-actions">
                 <button class="report-action-btn primary" onclick="saveDecodeForm('${reportId}')">💾 שמור</button>
                 <button class="report-action-btn" onclick="cancelDecodeForm('${reportId}')">ביטול</button>
@@ -1621,9 +1745,14 @@ function saveDecodeForm(reportId) {
         sat: allWeek ? null : parseTimeRanges(satStr)
     };
 
+    // Collect selected segment OIDs from decode form checkboxes
+    const segCbs = document.querySelectorAll(`.decode-seg-cb-${reportId}:checked`);
+    const featureIds = Array.from(segCbs).map(cb => parseInt(cb.value));
+
     updateCommunityReport(reportId, {
         status: 'decoded',
-        decodedHours: decodedHours
+        decodedHours: decodedHours,
+        featureIds: featureIds.length > 0 ? featureIds : null
     });
 
     // Re-render

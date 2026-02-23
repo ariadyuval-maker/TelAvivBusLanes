@@ -63,9 +63,12 @@ function deleteCommunityReport(id) {
 // ============================================================
 
 let SIGN_OVERRIDES = {};
+// Overrides keyed by oid for segment-specific matching
+let SIGN_OVERRIDES_BY_OID = {};
 
 function rebuildSignOverrides() {
     SIGN_OVERRIDES = {};
+    SIGN_OVERRIDES_BY_OID = {};
     const reports = loadCommunityReports();
     const decoded = reports
         .filter(r => r.status === 'decoded' && r.decodedHours)
@@ -74,19 +77,38 @@ function rebuildSignOverrides() {
     for (const report of decoded) {
         const key = report.street ? report.street.trim() : '';
         if (!key) continue;
-        SIGN_OVERRIDES[key] = {
+
+        const override = {
             report: report,
             hours: report.decodedHours,
             street: report.street,
             timestamp: report.timestamp,
-            featureId: report.featureId
+            featureIds: report.featureIds || null
         };
+
+        // If report has specific featureIds (new format), key by each oid
+        if (report.featureIds && report.featureIds.length > 0) {
+            for (const oid of report.featureIds) {
+                SIGN_OVERRIDES_BY_OID[oid] = override;
+            }
+        } else {
+            // Legacy: key by street name (applies to all segments of that street)
+            SIGN_OVERRIDES[key] = override;
+        }
     }
-    console.log(`📋 Sign overrides: ${Object.keys(SIGN_OVERRIDES).length} decoded`);
+    console.log(`📋 Sign overrides: ${Object.keys(SIGN_OVERRIDES_BY_OID).length} by oid, ${Object.keys(SIGN_OVERRIDES).length} by street`);
 }
 
 function getSignOverride(feature) {
     if (!feature || !feature.attributes) return null;
+
+    // First try segment-specific override by oid
+    const oid = feature.attributes.oid;
+    if (oid != null && SIGN_OVERRIDES_BY_OID[oid]) {
+        return SIGN_OVERRIDES_BY_OID[oid];
+    }
+
+    // Fallback: legacy street-name-based override (for old reports without featureIds)
     const street = feature.attributes.street_name;
     if (!street) return null;
     if (SIGN_OVERRIDES[street]) return SIGN_OVERRIDES[street];

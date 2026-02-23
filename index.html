@@ -467,6 +467,20 @@
             font-size: 12px; cursor: pointer; text-align: center;
         }
         .popup-report-btn:hover { background: #e9ecef; }
+
+        /* ====== Segment picker in report modal ====== */
+        .segment-picker {
+            max-height: 200px; overflow-y: auto; border: 1px solid #ddd;
+            border-radius: 8px; padding: 6px; background: #f8f9fa;
+        }
+        .segment-picker label {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
+            margin: 0;
+        }
+        .segment-picker label:hover { background: #e9ecef; }
+        .segment-picker input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; }
+        .segment-dir { font-size: 11px; color: #888; margin-right: auto; }
     </style>
 </head>
 <body>
@@ -553,9 +567,9 @@
                 <label>שם רחוב</label>
                 <input type="text" id="reportStreet" placeholder="יזוהה אוטומטית לפי מיקום...">
             </div>
-            <div class="form-group">
-                <label>קטע / תיאור</label>
-                <input type="text" id="reportSection" placeholder="למשל: מרחוב X עד רחוב Y">
+            <div class="form-group" id="segmentPickerGroup" style="display:none;">
+                <label>בחר קטעים שהשלט חל עליהם:</label>
+                <div id="segmentPicker" class="segment-picker"></div>
             </div>
             <div class="form-group">
                 <label>הערות</label>
@@ -576,8 +590,8 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="bus_lane_hours.js?v=7"></script>
-    <script src="community_reports.js?v=7"></script>
-    <script src="app.js?v=7"></script>
+    <script src="bus_lane_hours.js?v=8"></script>
+    <script src="community_reports.js?v=8"></script>
+    <script src="app.js?v=8"></script>
 </body>
 </html>
