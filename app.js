@@ -821,10 +821,9 @@ let followMode = false; // auto-center on user
 
 // ------ Voice State ------
 let voiceEnabled = false;
-let lastAlertedStreets = new Set(); // prevent repeat alerts within cooldown
-let alertCooldowns = {}; // street → timestamp of last alert
-const ALERT_COOLDOWN_MS = 120000; // 2 minutes between repeated alerts for same street
-const PROXIMITY_METERS = 200; // alert when within 200m of a blocked lane
+const ALERT_COOLDOWN_MS = 300000;    // 5 minutes between repeated alerts for same key
+let alertCooldowns = {};             // key → timestamp of last alert
+let currentSegment = null;           // the feature (segment) the user is currently driving on
 
 // ------ Driving Mode State ------
 let drivingMode = false;
@@ -892,6 +891,7 @@ function stopGps() {
     prevFilteredLat = null;
     prevFilteredLng = null;
     currentHeading = null;
+    currentSegment = null;
 }
 
 /**
@@ -949,8 +949,7 @@ function onGpsPosition(pos) {
 
     // --- Proximity alerts ---
     if (voiceEnabled) {
-        if (allFeatures.length > 0) checkProximity(userLatLng);
-        if (allCameras.length > 0) checkCameraProximity(userLatLng);
+        checkDrivingAlerts(userLatLng);
     }
 }
 
@@ -1154,137 +1153,228 @@ function distPointToSegment(p, a, b) {
 }
 
 /**
- * Check if user is near any blocked bus lane and trigger alerts
+ * =========================================================
+ *  SEGMENT-AWARE DRIVING ALERTS
+ *  1. Find the segment the user is currently driving on
+ *     (nearest polyline within 40m; if two-way, use filtered
+ *      bearing to pick the correct direction).
+ *  2. If that segment has a blocked bus lane → alert (5 min cooldown).
+ *  3. Look for a bus-lane camera on the current segment **or**
+ *     the next segment in the driving direction.  If distance
+ *     < 100 m → camera alert (5 min cooldown per camera).
+ *  No other alerts are generated.
+ * =========================================================
  */
-function checkProximity(userPos) {
-    const now = new Date();
-    const currentTime = Date.now();
-    const nearbyBlocked = [];
 
-    for (const feature of allFeatures) {
-        if (!feature.geometry || !feature.geometry.paths) continue;
+const SEGMENT_MATCH_RADIUS = 40;   // metres — max distance to snap to a segment
+const CAMERA_ALERT_RADIUS  = 100;  // metres — trigger camera alert within this distance
 
-        const status = getLaneStatus(feature, now);
-        if (!status.blocked) continue;
+/**
+ * Main alert entry-point — called every GPS tick when voice is enabled.
+ */
+function checkDrivingAlerts(userPos) {
+    if (allFeatures.length === 0) return;
 
-        const dist = distanceToPolyline(userPos, feature.geometry.paths);
-        if (dist <= PROXIMITY_METERS) {
-            const streetName = feature.attributes.street_name || 'לא ידוע';
-            const key = streetName;
+    const now      = new Date();
+    const nowMs    = Date.now();
+    const segment  = findCurrentSegment(userPos);
+    currentSegment = segment;                 // expose for other code
 
-            // Check cooldown
-            if (alertCooldowns[key] && (currentTime - alertCooldowns[key]) < ALERT_COOLDOWN_MS) {
-                continue;
-            }
+    if (!segment) return;                     // not on any known bus-lane street
 
-            nearbyBlocked.push({ streetName, dist: Math.round(dist), status });
-            alertCooldowns[key] = currentTime;
+    const attrs  = segment.feature.attributes;
+    const status = getLaneStatus(segment.feature, now);
+
+    // ---- Alert 1: blocked bus lane ----
+    if (status.blocked) {
+        const key = 'lane_' + attrs.oid;
+        if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
+            alertCooldowns[key] = nowMs;
+            const street = attrs.street_name || 'לא ידוע';
+            speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
+            showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
         }
     }
 
-    if (nearbyBlocked.length > 0) {
-        // Sort by distance
-        nearbyBlocked.sort((a, b) => a.dist - b.dist);
-        const closest = nearbyBlocked[0];
+    // ---- Alert 2: bus-lane camera on current or next segment ----
+    if (allCameras.length === 0) return;
 
-        // Voice alert
-        speakAlert(closest.streetName, closest.dist);
-
-        // Visual banner
-        showBanner(`🚫 נתצ חסום — ${closest.streetName} (${closest.dist} מ')`);
-    }
-}
-
-/**
- * Check if user is near any active enforcement camera and trigger alert
- */
-function checkCameraProximity(userPos) {
-    const currentTime = Date.now();
-    const now = new Date();
-    const nearbycameras = [];
+    // Collect candidate segments: current + next in driving direction
+    const candidateSegments = [segment.feature];
+    const nextSeg = findNextSegment(segment);
+    if (nextSeg) candidateSegments.push(nextSeg);
 
     for (const cam of allCameras) {
         const g = cam.geometry;
         if (!g || g.x === undefined || g.y === undefined) continue;
-
-        // Only warn for active cameras
         const a = cam.attributes;
         if (a.status && a.status !== 'פעיל') continue;
 
         const camPos = L.latLng(g.y, g.x);
-        const dist = userPos.distanceTo(camPos);
 
-        if (dist <= PROXIMITY_METERS) {
-            const key = 'cam_' + (a.ms_atar || a.name || `${g.y},${g.x}`);
-
-            // Check cooldown
-            if (alertCooldowns[key] && (currentTime - alertCooldowns[key]) < ALERT_COOLDOWN_MS) {
-                continue;
+        // Is this camera on one of the candidate segments?
+        let onCandidate = false;
+        for (const seg of candidateSegments) {
+            if (!seg.geometry || !seg.geometry.paths) continue;
+            if (distanceToPolyline(camPos, seg.geometry.paths) < SEGMENT_MATCH_RADIUS) {
+                onCandidate = true;
+                break;
             }
+        }
+        if (!onCandidate) continue;
 
-            const streetName = a.t_rechov1 || a.name || 'לא ידוע';
-            nearbycameras.push({ streetName, dist: Math.round(dist), key });
-            alertCooldowns[key] = currentTime;
+        // Distance from user to camera
+        const dist = userPos.distanceTo(camPos);
+        if (dist > CAMERA_ALERT_RADIUS) continue;
+
+        const key = 'cam_' + (a.ms_atar || a.OBJECTID || `${g.y},${g.x}`);
+        if (alertCooldowns[key] && (nowMs - alertCooldowns[key]) < ALERT_COOLDOWN_MS) continue;
+
+        alertCooldowns[key] = nowMs;
+        const street = a.t_rechov1 || a.name || 'לא ידוע';
+        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${Math.round(dist)} מטרים`);
+        showBanner(`📷 מצלמת נת"צ — ${street} (${Math.round(dist)} מ')`);
+        break;  // one camera alert per GPS tick is enough
+    }
+}
+
+/**
+ * Find the GIS segment the user is currently driving on.
+ * Returns { feature, dist, travelDirection } or null.
+ *   travelDirection: bearing in degrees the user is moving along the segment
+ *   (for two-way segments this is derived from filteredBearing).
+ */
+function findCurrentSegment(userPos) {
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const feature of allFeatures) {
+        if (!feature.geometry || !feature.geometry.paths) continue;
+        const dist = distanceToPolyline(userPos, feature.geometry.paths);
+        if (dist < bestDist && dist < SEGMENT_MATCH_RADIUS) {
+            bestDist = dist;
+            best = feature;
+        }
+    }
+    if (!best) return null;
+
+    const dir = best.attributes.direction_name;
+    const dirMap = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
+
+    let travelDirection;
+    if (dir && dirMap[dir] !== undefined) {
+        // One-way — travel direction is known
+        travelDirection = dirMap[dir];
+    } else if (filteredBearing !== null) {
+        // Two-way — use the user's filtered GPS bearing
+        travelDirection = filteredBearing;
+    } else {
+        travelDirection = null;
+    }
+
+    return { feature: best, dist: bestDist, travelDirection };
+}
+
+/**
+ * Given the current segment + driving direction, find the next segment
+ * the user will enter (same street_name, matching from/to connection).
+ *
+ * Segment polylines go from `from_street` → `to_street`.
+ * The "next" segment is the one whose `from_street` equals the current
+ * segment's `to_street` when driving forward, or vice-versa.
+ */
+function findNextSegment(current) {
+    if (!current || !current.feature) return null;
+    const attrs = current.feature.attributes;
+    const street = attrs.street_name;
+    if (!street) return null;
+
+    // Determine which end of the segment the user is heading toward.
+    // Polyline first point ≈ from_street, last point ≈ to_street.
+    const paths = current.feature.geometry.paths;
+    if (!paths || paths.length === 0 || paths[0].length < 2) return null;
+
+    const firstPt = paths[0][0];                        // [lng, lat]
+    const lastPt  = paths[paths.length - 1][ paths[paths.length - 1].length - 1 ];
+
+    const bearingAlongSegment = bearingBetween(
+        firstPt[1], firstPt[0],   // from_street end
+        lastPt[1],  lastPt[0]     // to_street end
+    );
+
+    // Decide if user drives from→to or to→from
+    let drivingForward = true;  // default: from → to
+    if (current.travelDirection !== null) {
+        let diff = current.travelDirection - bearingAlongSegment;
+        if (diff > 180) diff -= 360;
+        if (diff < -180) diff += 360;
+        drivingForward = Math.abs(diff) < 90;
+    }
+
+    // The junction we're heading toward
+    const targetJunction = drivingForward ? attrs.to_street : attrs.from_street;
+    if (!targetJunction) return null;
+
+    // Search for a connecting segment on the same street
+    let bestNext = null;
+    let bestDist = Infinity;
+
+    for (const feature of allFeatures) {
+        if (feature === current.feature) continue;
+        const a = feature.attributes;
+        if (a.street_name !== street) continue;
+        if (!feature.geometry || !feature.geometry.paths) continue;
+
+        // Does this segment connect at the target junction?
+        const connectsAtFrom = a.from_street === targetJunction;
+        const connectsAtTo   = a.to_street   === targetJunction;
+        if (!connectsAtFrom && !connectsAtTo) continue;
+
+        // Prefer the segment that continues in the same direction
+        const p  = feature.geometry.paths;
+        const fp = p[0][0];
+        const lp = p[p.length - 1][ p[p.length - 1].length - 1 ];
+        const segBearing = bearingBetween(fp[1], fp[0], lp[1], lp[0]);
+
+        let dirDiff = (current.travelDirection !== null)
+            ? Math.abs(current.travelDirection - segBearing)
+            : 0;
+        if (dirDiff > 180) dirDiff = 360 - dirDiff;
+
+        if (dirDiff < bestDist) {
+            bestDist = dirDiff;
+            bestNext = feature;
         }
     }
 
-    if (nearbycameras.length > 0) {
-        nearbycameras.sort((a, b) => a.dist - b.dist);
-        const closest = nearbycameras[0];
-
-        // Voice alert
-        speakCameraAlert(closest.streetName, closest.dist);
-
-        // Visual banner
-        showBanner(`📷 מצלמת נת"צ — ${closest.streetName} (${closest.dist} מ')`);
-    }
+    return bestNext;
 }
 
+// =========================================================
+//  Speech & banner helpers
+// =========================================================
+
 /**
- * Speak a camera proximity alert in Hebrew
+ * Speak a Hebrew sentence via the Web Speech API.
  */
-function speakCameraAlert(streetName, distMeters) {
+function speakHebrew(text) {
     if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
 
-    const text = `זהירות! מצלמת אכיפה ברחוב ${streetName}, ${distMeters} מטרים`;
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'he-IL';
-    utterance.rate = 1.1;
+    utterance.lang   = 'he-IL';
+    utterance.rate   = 1.1;
     utterance.volume = 1.0;
 
     const voices = window.speechSynthesis.getVoices();
-    const hebrewVoice = voices.find(v => v.lang.startsWith('he'));
-    if (hebrewVoice) utterance.voice = hebrewVoice;
+    const hv = voices.find(v => v.lang.startsWith('he'));
+    if (hv) utterance.voice = hv;
 
     window.speechSynthesis.speak(utterance);
 }
 
 /**
- * Speak a Hebrew voice alert
- */
-function speakAlert(streetName, distMeters) {
-    if (!('speechSynthesis' in window)) return;
-
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
-
-    const text = `זהירות! נתיב תחבורה ציבורית חסום ברחוב ${streetName}, ${distMeters} מטרים`;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'he-IL';
-    utterance.rate = 1.1;
-    utterance.volume = 1.0;
-
-    // Try to find Hebrew voice
-    const voices = window.speechSynthesis.getVoices();
-    const hebrewVoice = voices.find(v => v.lang.startsWith('he'));
-    if (hebrewVoice) utterance.voice = hebrewVoice;
-
-    window.speechSynthesis.speak(utterance);
-}
-
-/**
- * Show a visual alert banner (auto-hides after 5s)
+ * Show a visual alert banner (auto-hides after 5 s).
  */
 function showBanner(text) {
     const banner = document.getElementById('voiceBanner');
