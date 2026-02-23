@@ -643,7 +643,7 @@ function renderLanes(features, now) {
             });
 
             // Don't bind popups during sim planning (they intercept clicks)
-            if (!simPlanning) {
+            if (!(simActive && simPlanning)) {
                 polyline.bindPopup(createPopupContent(feature, status), {
                     maxWidth: 320,
                     className: 'lane-popup-container'
@@ -2459,7 +2459,7 @@ function registerServiceWorker() {
 // ============================================================
 
 let simActive = false;          // simulator panel open?
-let simPlanning = true;         // true = planning phase, false = playing
+let simPlanning = false;        // true = planning phase, false = playing
 let simRoute = [];              // ordered array of route items: { type:'segment'|'waypoint', feature?, latlng?, label? }
 let simPlaying = false;         // animation running?
 let simAnimFrame = null;        // requestAnimationFrame id
@@ -2508,6 +2508,15 @@ function enterSimPlanning() {
     _simMapClickHandler = function(e) { onSimMapClick(e); };
     map.on('click', _simMapClickHandler);
 
+    // Also add direct click on polylines as fallback (in case bubbling fails)
+    laneLayerGroup.eachLayer(layer => {
+        layer._simClickFn = function(e) {
+            L.DomEvent.stopPropagation(e);  // prevent double-fire
+            onSimMapClick(e);
+        };
+        layer.on('click', layer._simClickFn);
+    });
+
     renderSimRouteList();
 }
 
@@ -2536,6 +2545,12 @@ function _disableLanePopups() {
  */
 function _restoreLanePopups() {
     laneLayerGroup.eachLayer(layer => {
+        // Remove direct sim click handler
+        if (layer._simClickFn) {
+            layer.off('click', layer._simClickFn);
+            delete layer._simClickFn;
+        }
+        // Restore popup
         if (layer._simSavedPopup) {
             layer.bindPopup(layer._simSavedPopup);
             delete layer._simSavedPopup;
@@ -3139,15 +3154,8 @@ function clearSimRoute() {
     renderSimRouteList();
     updateSimStartButton();
     updateSimStatus();
-    // Re-enter planning state
-    _disableLanePopups();
-    if (!_simMapClickHandler) {
-        _simMapClickHandler = function(e) { onSimMapClick(e); };
-        map.on('click', _simMapClickHandler);
-    }
-    document.getElementById('simPhaseLabel').textContent = 'שלב תכנון — לחץ בכל מקום על המפה';
-    document.getElementById('simStartBtn').style.display = '';
-    document.getElementById('simStopBtn').style.display = 'none';
+    // Re-enter planning state properly
+    enterSimPlanning();
 }
 
 /**

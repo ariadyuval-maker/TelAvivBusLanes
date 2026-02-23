@@ -1,4 +1,4 @@
-const CACHE_NAME = 'buslanes-v16';
+const CACHE_NAME = 'buslanes-v17';
 const STATIC_ASSETS = [
     './',
     './index.html',
