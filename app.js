@@ -985,9 +985,9 @@ function calculateHeading(currentPos) {
     const p1 = recent[0];
     const p3 = recent[2];
 
-    // Skip if not enough movement (less than ~3 meters)
+    // Skip if not enough movement (less than ~10 meters)
     const dist = L.latLng(p1.lat, p1.lng).distanceTo(L.latLng(p3.lat, p3.lng));
-    if (dist < 3) return currentHeading; // keep previous heading if stationary
+    if (dist < 10) return currentHeading; // keep previous heading if stationary
 
     return bearingBetween(p1.lat, p1.lng, p3.lat, p3.lng);
 }
@@ -1026,8 +1026,8 @@ function findNearestLaneDirection(userPos) {
         const dist = distanceToPolyline(userPos, feature.geometry.paths);
         if (dist < minDist && dist < 30) { // within 30m
             minDist = dist;
-            // Map cardinal direction to bearing degrees
-            const dirMap = { N: 0, E: 90, S: 180, W: 270 };
+            // Map direction to bearing degrees (cardinal + diagonal every 45°)
+            const dirMap = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
             if (dirMap[dir] !== undefined) {
                 nearestDir = dirMap[dir];
             }
