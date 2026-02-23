@@ -2637,6 +2637,47 @@ function onSimMapClick(e) {
 }
 
 /**
+ * Convert a direction name (N/S/E/W/NE/NW/SE/SW) to an arrow emoji.
+ * If direction_name is null, compute from geometry vertex order.
+ */
+function getDirectionArrow(item) {
+    if (item.type === 'waypoint') return '';
+    const dir = item.feature.attributes.direction_name;
+    const arrowMap = {
+        'N': '⬆️', 'S': '⬇️', 'E': '➡️', 'W': '⬅️',
+        'NE': '↗️', 'NW': '↖️', 'SE': '↘️', 'SW': '↙️'
+    };
+    if (dir && arrowMap[dir]) return arrowMap[dir];
+
+    // Fallback: compute from geometry start→end
+    const paths = item.feature.geometry && item.feature.geometry.paths;
+    if (!paths || paths.length === 0) return '';
+    const firstPath = paths[0];
+    if (firstPath.length < 2) return '';
+    const start = firstPath[0];
+    const end = firstPath[firstPath.length - 1];
+    const bearing = bearingBetween(start[1], start[0], end[1], end[0]);
+    // Convert bearing to 8-way arrow
+    const idx = Math.round(((bearing + 360) % 360) / 45) % 8;
+    return ['⬆️','↗️','➡️','↘️','⬇️','↙️','⬅️','↖️'][idx];
+}
+
+/**
+ * Get bearing angle from geometry for placing arrow markers on map.
+ * Returns bearing in degrees (0=N, 90=E).
+ */
+function getSegmentBearing(item) {
+    if (item.type !== 'segment' || !item.feature.geometry || !item.feature.geometry.paths) return 0;
+    const paths = item.feature.geometry.paths;
+    const allPts = [];
+    paths.forEach(p => p.forEach(c => allPts.push(c)));
+    if (allPts.length < 2) return 0;
+    const start = allPts[0];
+    const end = allPts[allPts.length - 1];
+    return bearingBetween(start[1], start[0], end[1], end[0]);
+}
+
+/**
  * Remove a segment from the planned route by index.
  */
 function simRemoveSegment(idx) {
@@ -2668,11 +2709,13 @@ function renderSimRouteList() {
             const status = getLaneStatus(item.feature, now);
             const blockedClass = status.blocked ? ' sim-blocked' : '';
             const statusEmoji = status.blocked ? '🔴' : (status.category === 'unknown' ? '⚪' : '🟢');
+            const dirArrow = getDirectionArrow(item);
             return `<div class="sim-seg-item${blockedClass}${activeClass}" id="sim-seg-${i}">
                 <div class="seg-num">${i + 1}</div>
                 <div class="seg-info">
-                    <div class="seg-street">${statusEmoji} ${a.street_name || '?'}</div>
+                    <div class="seg-street">${statusEmoji} ${a.street_name || '?'} ${dirArrow}</div>
                     <div class="seg-section">${a.from_street || '?'} → ${a.to_street || '?'}</div>
+                    <div class="seg-dir">${a.direction_name ? 'כיוון: ' + a.direction_name : ''}</div>
                 </div>
                 ${removeBtn}
             </div>`;
@@ -2713,6 +2756,38 @@ function updateSimHighlight() {
                 }).addTo(simHighlightLayer);
                 path.forEach(pt => allPts.push(pt));
             });
+
+            // Add direction arrow markers along the segment
+            const bearing = getSegmentBearing(item);
+            const flatPts = [];
+            latLngs.forEach(path => path.forEach(pt => flatPts.push(pt)));
+            if (flatPts.length >= 2) {
+                // Place arrows every ~100m, at least one at midpoint
+                const totalLen = flatPts.reduce((sum, pt, j) => {
+                    if (j === 0) return 0;
+                    return sum + L.latLng(flatPts[j - 1]).distanceTo(L.latLng(pt));
+                }, 0);
+                const numArrows = Math.max(1, Math.round(totalLen / 100));
+                for (let a = 0; a < numArrows; a++) {
+                    const frac = (a + 0.5) / numArrows;
+                    const ptIdx = Math.min(Math.floor(frac * flatPts.length), flatPts.length - 1);
+                    const arrowPt = flatPts[ptIdx];
+                    // Local bearing from nearby points
+                    const prevIdx = Math.max(0, ptIdx - 1);
+                    const nextIdx = Math.min(flatPts.length - 1, ptIdx + 1);
+                    const localBearing = bearingBetween(
+                        flatPts[prevIdx][0], flatPts[prevIdx][1],
+                        flatPts[nextIdx][0], flatPts[nextIdx][1]
+                    );
+                    const arrowIcon = L.divIcon({
+                        className: 'sim-arrow-icon',
+                        html: `<div style="transform: rotate(${localBearing}deg); font-size: 20px; line-height:1;">⬆</div>`,
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12]
+                    });
+                    L.marker(arrowPt, { icon: arrowIcon, interactive: false }).addTo(simHighlightLayer);
+                }
+            }
         } else if (item.type === 'waypoint') {
             const pt = item.latlng;
             allPts.push(pt);
