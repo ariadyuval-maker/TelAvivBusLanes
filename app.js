@@ -1208,11 +1208,9 @@ function setupDriveControls() {
     if (btnVoice) btnVoice.addEventListener('click', toggleVoice);
     if (btnDrive) btnDrive.addEventListener('click', toggleDrivingMode);
 
-    // Photo & Reports buttons
-    const btnPhoto = document.getElementById('btnPhoto');
+    // Reports button
     const btnReports = document.getElementById('btnReports');
     const btnCloseReports = document.getElementById('btnCloseReports');
-    if (btnPhoto) btnPhoto.addEventListener('click', openPhotoModal);
     if (btnReports) btnReports.addEventListener('click', toggleReportsPanel);
     if (btnCloseReports) btnCloseReports.addEventListener('click', closeReportsPanel);
 
