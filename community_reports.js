@@ -19,8 +19,10 @@ function loadCommunityReports() {
 function saveCommunityReports(reports) {
     try {
         localStorage.setItem(REPORTS_STORAGE_KEY, JSON.stringify(reports));
+        return true;
     } catch (e) {
-        console.warn('Failed to save community reports:', e);
+        console.error('❌ Failed to save community reports:', e);
+        return false;
     }
 }
 
@@ -30,7 +32,11 @@ function addCommunityReport(report) {
     report.timestamp = new Date().toISOString();
     report.status = report.status || 'pending';
     reports.push(report);
-    saveCommunityReports(reports);
+    const ok = saveCommunityReports(reports);
+    if (!ok) {
+        console.error('❌ Failed to save report — localStorage quota exceeded?');
+        return null;
+    }
     rebuildSignOverrides();
     return report;
 }

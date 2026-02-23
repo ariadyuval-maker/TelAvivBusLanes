@@ -1245,10 +1245,36 @@ function setupDriveControls() {
 // Photo Capture & Sign Report
 // ============================================================
 
-let pendingReportData = { photoData: null, lat: null, lng: null, gpsSource: null };
+let pendingReportData = { photoData: null, photoFull: null, lat: null, lng: null, gpsSource: null };
+
+/**
+ * Resize/compress a photo to fit in localStorage.
+ * Returns a promise that resolves with a smaller base64 JPEG data URL.
+ */
+function resizePhoto(dataUrl, maxWidth = 800, quality = 0.6) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            let w = img.width;
+            let h = img.height;
+            if (w > maxWidth) {
+                h = Math.round(h * maxWidth / w);
+                w = maxWidth;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => resolve(dataUrl); // fallback to original
+        img.src = dataUrl;
+    });
+}
 
 function openPhotoModal() {
-    pendingReportData = { photoData: null, lat: null, lng: null, gpsSource: null };
+    pendingReportData = { photoData: null, photoFull: null, lat: null, lng: null, gpsSource: null };
     document.getElementById('photoPreview').style.display = 'none';
     document.getElementById('photoPreview').src = '';
     document.getElementById('gpsStatus').innerHTML = '';
@@ -1294,13 +1320,20 @@ async function handlePhotoSelected(e) {
     const file = e.target.files[0];
     if (!file) return;
 
-    // Show preview
+    // Show preview and compress for storage
     const preview = document.getElementById('photoPreview');
     const reader = new FileReader();
-    reader.onload = (ev) => {
-        preview.src = ev.target.result;
+    reader.onload = async (ev) => {
+        const fullData = ev.target.result;
+        preview.src = fullData;
         preview.style.display = 'block';
-        pendingReportData.photoData = ev.target.result;
+
+        // Compress for localStorage (phone photos can be 5-15MB as base64)
+        const compressed = await resizePhoto(fullData, 800, 0.6);
+        pendingReportData.photoData = compressed;
+        pendingReportData.photoFull = null; // don't store full-res
+        console.log(`📷 Photo compressed: ${(fullData.length/1024).toFixed(0)}KB → ${(compressed.length/1024).toFixed(0)}KB`);
+
         document.getElementById('btnSubmitReport').disabled = false;
     };
     reader.readAsDataURL(file);
@@ -1423,7 +1456,11 @@ function submitReport() {
         featureId: null
     };
 
-    addCommunityReport(report);
+    const saved = addCommunityReport(report);
+    if (!saved) {
+        alert('שגיאה בשמירת הדיווח. ייתכן שהזיכרון מלא — נסה למחוק דיווחים ישנים.');
+        return;
+    }
     closePhotoModal();
 
     showBanner(`🪧 דיווח שלט נשמר — ${street}`);
