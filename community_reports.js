@@ -403,6 +403,9 @@ function getSignOverride(feature) {
     if (!feature || !feature.attributes) return null;
     const oid = feature.attributes.oid;
     if (oid != null && SIGN_OVERRIDES_BY_OID[oid]) return SIGN_OVERRIDES_BY_OID[oid];
+    // For sub-features split at junctions, check parent OID too
+    const parentOid = feature.attributes._parentOid;
+    if (parentOid != null && SIGN_OVERRIDES_BY_OID[parentOid]) return SIGN_OVERRIDES_BY_OID[parentOid];
     const street = feature.attributes.street_name;
     if (!street) return null;
     if (SIGN_OVERRIDES[street]) return SIGN_OVERRIDES[street];

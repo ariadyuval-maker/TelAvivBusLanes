@@ -36,7 +36,9 @@ const HEBREW_DAYS_SHORT = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳
 // ------ State ------
 let map;
 let allFeatures = [];
+let allRawFeatures = [];  // original unsplit features
 let allCameras = [];
+let allJunctions = [];    // signalized junctions from layer 547
 let laneLayerGroup;
 let cameraLayerGroup;
 let currentDayType = null; // 'sun_thurs', 'fri', 'sat'
@@ -3360,13 +3362,18 @@ async function init() {
 
     // Fetch data from Tel Aviv GIS (lanes + cameras in parallel)
     try {
-        const [lanes, cameras] = await Promise.all([
+        const [lanes, cameras, junctions] = await Promise.all([
             fetchAllFeatures(),
-            fetchAllCameras()
+            fetchAllCameras(),
+            fetchSignalizedJunctions()
         ]);
 
-        allFeatures = lanes;
+        allRawFeatures = lanes;
+        allJunctions = junctions;
         allCameras = cameras;
+
+        // Split bus lane features at signalized junctions
+        allFeatures = splitFeaturesAtJunctions(lanes, junctions);
 
         if (allFeatures.length === 0 && allCameras.length === 0) {
             document.querySelector('.loading-text').textContent = 'לא נמצאו נתונים';
