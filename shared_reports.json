@@ -1,1 +1,54 @@
-[]
+[
+  {
+    "street": "קפלן אליעזר",
+    "section": "אבן גבירול→דה וינצ'י לאונרדו",
+    "notes": "Qa id1",
+    "lat": 31.903218258058956,
+    "lng": 35.00638126623686,
+    "gpsSource": "device",
+    "photoData": null,
+    "decodedHours": {
+      "allWeek": false,
+      "sun_thu": [
+        [
+          7,
+          22
+        ]
+      ],
+      "fri": null,
+      "sat": null
+    },
+    "featureIds": [
+      64
+    ],
+    "id": "mlzed5ki_ffbj",
+    "timestamp": "2026-02-23T16:34:43.698Z",
+    "status": "decoded"
+  },
+  {
+    "street": "קפלן אליעזר",
+    "section": "דה וינצ'י לאונרדו→בגין מנחם",
+    "notes": "Qa id2",
+    "lat": 31.903218221331176,
+    "lng": 35.00638078082638,
+    "gpsSource": "device",
+    "photoData": null,
+    "decodedHours": {
+      "allWeek": false,
+      "sun_thu": [
+        [
+          14,
+          18
+        ]
+      ],
+      "fri": null,
+      "sat": null
+    },
+    "featureIds": [
+      34
+    ],
+    "id": "mlzehndc_eaew",
+    "timestamp": "2026-02-23T16:38:13.392Z",
+    "status": "decoded"
+  }
+]
