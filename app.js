@@ -1188,9 +1188,9 @@ function onGpsPosition(pos) {
         userAccuracyCircle.setRadius(accuracy);
     }
 
-    // --- Auto-follow ---
+    // --- Auto-follow --- keep car fixed at screen center
     if (followMode) {
-        map.setView(userLatLng, Math.max(map.getZoom(), 16));
+        map.setView(userLatLng, Math.max(map.getZoom(), 16), { animate: false });
     }
 
     // --- Proximity alerts ---
@@ -1251,7 +1251,7 @@ function updateFilteredSpeedAndBearing(lat, lng, now) {
 
 /**
  * Create or update the user position marker.
- * In driving mode: shows a 🚗 rotated to the heading direction.
+ * In driving mode: shows a 🚗 (no rotation).
  * Otherwise: shows a blue dot.
  */
 function updateUserMarker() {
@@ -1261,8 +1261,8 @@ function updateUserMarker() {
     const hasHeading = currentHeading !== null;
 
     if (drivingMode) {
-        // Car icon rotated to heading
-        const html = `<div class="car-icon" style="transform: rotate(${headingDeg}deg);">🚗</div>`;
+        // Car icon (static, no rotation)
+        const html = `<div class="car-icon">🚗</div>`;
         const icon = L.divIcon({
             className: 'car-marker',
             html: html,
@@ -3110,8 +3110,8 @@ function simAnimationStep(timestamp) {
     // Update car
     updateSimCar(pos.lat, pos.lng, heading);
 
-    // Follow car
-    map.panTo([pos.lat, pos.lng], { animate: true, duration: 0.3 });
+    // Keep car fixed at center of screen
+    map.setView([pos.lat, pos.lng], map.getZoom(), { animate: false });
 
     // Check for alerts on the current segment
     checkSimAlerts(pos.lat, pos.lng);
@@ -3206,7 +3206,7 @@ function checkSimAlerts(lat, lng) {
  * Update the simulator car marker on the map.
  */
 function updateSimCar(lat, lng, heading) {
-    const html = `<div class="car-icon" style="transform: rotate(${Math.round(heading)}deg);">🚗</div>`;
+    const html = `<div class="car-icon">🚗</div>`;
     const icon = L.divIcon({
         className: 'car-marker',
         html: html,
