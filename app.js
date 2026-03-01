@@ -1251,7 +1251,7 @@ function updateFilteredSpeedAndBearing(lat, lng, now) {
 
 /**
  * Create or update the user position marker.
- * In driving mode: shows a 🚗 (no rotation).
+ * In driving mode: shows a 🚗 rotated to the heading direction.
  * Otherwise: shows a blue dot.
  */
 function updateUserMarker() {
@@ -1261,8 +1261,8 @@ function updateUserMarker() {
     const hasHeading = currentHeading !== null;
 
     if (drivingMode) {
-        // Car icon (static, no rotation)
-        const html = `<div class="car-icon">🚗</div>`;
+        // Car icon rotated to heading
+        const html = `<div class="car-icon" style="transform: rotate(${headingDeg}deg);">🚗</div>`;
         const icon = L.divIcon({
             className: 'car-marker',
             html: html,
@@ -1433,7 +1433,7 @@ function checkDrivingAlerts(userPos) {
 
     // ---- Alert 1: blocked bus lane ----
     if (status.blocked) {
-        const key = 'lane_' + attrs.oid;
+        const key = 'lane_blocked_' + attrs.oid;
         if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
             alertCooldowns[key] = nowMs;
             const street = attrs.street_name || 'לא ידוע';
@@ -1442,7 +1442,19 @@ function checkDrivingAlerts(userPos) {
         }
     }
 
-    // ---- Alert 2: bus-lane camera on current or next segment ----
+    // ---- Alert 1b: open bus lane (allowed to drive) ----
+    if (!status.blocked) {
+        const key = 'lane_open_' + attrs.oid;
+        if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
+            alertCooldowns[key] = nowMs;
+            const street = attrs.street_name || 'לא ידוע';
+            speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
+            showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+        }
+    }
+
+    // ---- Alert 2: bus-lane camera (only when lane is blocked) ----
+    if (!status.blocked) return;  // no camera alert when lane is open
     if (allCameras.length === 0) return;
 
     // Collect candidate segment OIDs: current + next in driving direction
@@ -1751,9 +1763,9 @@ function setupDriveControls() {
     if (btnReports) btnReports.addEventListener('click', toggleReportsPanel);
     if (btnCloseReports) btnCloseReports.addEventListener('click', closeReportsPanel);
 
-    // Stop auto-follow when user manually pans
+    // Stop auto-follow when user manually pans (but not in driving mode)
     map.on('dragstart', () => {
-        if (followMode) followMode = false;
+        if (followMode && !drivingMode) followMode = false;
     });
 
     // Double-tap on map to re-center on user location
@@ -3171,7 +3183,17 @@ function checkSimAlerts(lat, lng) {
         showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
     }
 
-    // Alert for camera
+    // Alert for open lane
+    const openKey = 'sim_open_' + attrs.oid;
+    if (!status.blocked && !simAlertedSegments.has(openKey)) {
+        simAlertedSegments.add(openKey);
+        const street = attrs.street_name || 'לא ידוע';
+        speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
+        showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+    }
+
+    // Alert for camera (only when lane is blocked)
+    if (!status.blocked) return;  // no camera alert when lane is open
     const userPos = L.latLng(lat, lng);
     for (const cam of allCameras) {
         const g = cam.geometry;
@@ -3206,7 +3228,7 @@ function checkSimAlerts(lat, lng) {
  * Update the simulator car marker on the map.
  */
 function updateSimCar(lat, lng, heading) {
-    const html = `<div class="car-icon">🚗</div>`;
+    const html = `<div class="car-icon" style="transform: rotate(${Math.round(heading)}deg);">🚗</div>`;
     const icon = L.divIcon({
         className: 'car-marker',
         html: html,
