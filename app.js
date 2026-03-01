@@ -1638,30 +1638,40 @@ function hebrewNumber(n) {
 
 /**
  * Speak a Hebrew sentence via the Web Speech API.
- * Includes Chrome workaround for speechSynthesis getting stuck.
+ * Uses queue to prevent cancel() from killing speech.
  */
+let _speechUnlocked = false;
+let _speechQueue = [];
+let _speechKeepAlive = null;
+
 function speakHebrew(text) {
     if (!('speechSynthesis' in window)) return;
+    if (!_speechUnlocked) {
+        // Queue for later — speech not yet unlocked by user gesture
+        _speechQueue.push(text);
+        return;
+    }
+    _speakNow(text);
+}
 
+function _speakNow(text) {
     const synth = window.speechSynthesis;
     synth.cancel();
-
-    // Chrome sometimes needs a resume kick after cancel
-    if (synth.paused) synth.resume();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang   = 'he-IL';
     utterance.rate   = 1.1;
     utterance.volume = 1.0;
 
-    // Try to find a Hebrew voice
     const voices = synth.getVoices();
     const hv = voices.find(v => v.lang.startsWith('he'));
     if (hv) utterance.voice = hv;
 
+    utterance.onerror = (e) => console.warn('Speech error:', e.error);
+
     synth.speak(utterance);
 
-    // Chrome bug: long utterances get stuck after ~15s. Keep-alive timer.
+    // Chrome bug: long utterances get stuck. Keep-alive timer.
     if (_speechKeepAlive) clearInterval(_speechKeepAlive);
     _speechKeepAlive = setInterval(() => {
         if (!synth.speaking) { clearInterval(_speechKeepAlive); return; }
@@ -1669,18 +1679,41 @@ function speakHebrew(text) {
         synth.resume();
     }, 5000);
 }
-let _speechKeepAlive = null;
 
 /**
- * Warm up speechSynthesis on user gesture to unlock audio on mobile/Chrome.
- * Call this from any button click before speech is needed.
+ * Unlock speechSynthesis by speaking from a user gesture (click).
+ * Must be called from a click/touch handler.
  */
-function warmUpSpeech() {
+function unlockSpeech() {
     if (!('speechSynthesis' in window)) return;
-    const dummy = new SpeechSynthesisUtterance('');
-    dummy.volume = 0;
-    dummy.lang = 'he-IL';
-    window.speechSynthesis.speak(dummy);
+    if (_speechUnlocked) return;
+
+    const synth = window.speechSynthesis;
+    // Speak a short confirmation to unlock the audio context
+    const utterance = new SpeechSynthesisUtterance('התראות מופעלות');
+    utterance.lang = 'he-IL';
+    utterance.rate = 1.1;
+    utterance.volume = 1.0;
+
+    const voices = synth.getVoices();
+    const hv = voices.find(v => v.lang.startsWith('he'));
+    if (hv) utterance.voice = hv;
+
+    utterance.onend = () => {
+        _speechUnlocked = true;
+        // Play any queued alerts
+        if (_speechQueue.length > 0) {
+            const next = _speechQueue.shift();
+            _speechQueue = []; // clear rest — only latest is relevant
+            _speakNow(next);
+        }
+    };
+    utterance.onerror = () => {
+        // Even if error, mark as unlocked so we try real speaks
+        _speechUnlocked = true;
+    };
+
+    synth.speak(utterance);
 }
 
 /**
@@ -1732,11 +1765,7 @@ function toggleVoice() {
     updateVoiceButton();
 
     if (voiceEnabled) {
-        // Need to trigger speech from user gesture to unlock audio
-        const utterance = new SpeechSynthesisUtterance('התראות קוליות מופעלות');
-        utterance.lang = 'he-IL';
-        utterance.volume = 0.5;
-        window.speechSynthesis.speak(utterance);
+        unlockSpeech();  // unlock audio + say confirmation from user gesture
 
         // Auto-enable GPS if not already on
         if (!gpsActive) {
@@ -1757,6 +1786,7 @@ function toggleDrivingMode() {
             voiceEnabled = true;
             updateVoiceButton();
         }
+        unlockSpeech();  // unlock audio from user gesture
 
         // Switch marker to car icon immediately
         if (userMarker && userLatLng) updateUserMarker();
@@ -3121,7 +3151,7 @@ function startSimPlayback() {
     // Enable voice for sim
     voiceEnabled = true;
     updateVoiceButton();
-    warmUpSpeech();  // unlock audio on user gesture (play button click)
+    unlockSpeech();  // unlock audio on user gesture (play button click)
 
     // Reset cooldowns for fresh sim
     alertCooldowns = {};
