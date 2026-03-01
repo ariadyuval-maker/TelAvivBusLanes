@@ -1430,24 +1430,23 @@ function checkDrivingAlerts(userPos) {
 
     const attrs  = segment.feature.attributes;
     const status = getLaneStatus(segment.feature, now);
+    const street = attrs.street_name || 'לא ידוע';
 
-    // ---- Alert 1: blocked bus lane ----
+    // ---- Alert 1: blocked bus lane (one alert per street name) ----
     if (status.blocked) {
-        const key = 'lane_blocked_' + attrs.oid;
+        const key = 'lane_blocked_' + street;
         if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
             alertCooldowns[key] = nowMs;
-            const street = attrs.street_name || 'לא ידוע';
             speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
             showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
         }
     }
 
-    // ---- Alert 1b: open bus lane (allowed to drive) ----
+    // ---- Alert 1b: open bus lane (one alert per street name) ----
     if (!status.blocked) {
-        const key = 'lane_open_' + attrs.oid;
+        const key = 'lane_open_' + street;
         if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
             alertCooldowns[key] = nowMs;
-            const street = attrs.street_name || 'לא ידוע';
             speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
             showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
         }
@@ -3037,7 +3036,7 @@ function startSimPlayback() {
     simPlanning = false;
     simPlaying = true;
     document.body.classList.remove('sim-planning');
-    document.getElementById('simPhaseLabel').textContent = '▶ סימולציה פעילה — 40 קמ״ש';
+    document.getElementById('simPhaseLabel').textContent = `▶ סימולציה פעילה — ${SIM_SPEED_KMH} קמ״ש`;
     document.getElementById('simStartBtn').style.display = 'none';
     document.getElementById('simStopBtn').style.display = '';
 
@@ -3173,27 +3172,25 @@ function checkSimAlerts(lat, lng) {
     const now = new Date();
     const status = getLaneStatus(feature, now);
     const attrs = feature.attributes;
-    const segKey = 'sim_lane_' + attrs.oid;
+    const street = attrs.street_name || 'לא ידוע';
 
-    // Alert for blocked lane
-    if (status.blocked && !simAlertedSegments.has(segKey)) {
-        simAlertedSegments.add(segKey);
-        const street = attrs.street_name || 'לא ידוע';
-        speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
-        showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
-    }
+    // Use street+status as key so we alert once per street per status change
+    const statusKey = status.blocked ? 'blocked' : 'open';
+    const alertKey = 'sim_' + statusKey + '_' + street;
 
-    // Alert for open lane
-    const openKey = 'sim_open_' + attrs.oid;
-    if (!status.blocked && !simAlertedSegments.has(openKey)) {
-        simAlertedSegments.add(openKey);
-        const street = attrs.street_name || 'לא ידוע';
-        speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
-        showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+    if (!simAlertedSegments.has(alertKey)) {
+        simAlertedSegments.add(alertKey);
+        if (status.blocked) {
+            speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
+            showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
+        } else {
+            speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
+            showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+        }
     }
 
     // Alert for camera (only when lane is blocked)
-    if (!status.blocked) return;  // no camera alert when lane is open
+    if (!status.blocked) return;
     const userPos = L.latLng(lat, lng);
     for (const cam of allCameras) {
         const g = cam.geometry;
