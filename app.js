@@ -1488,7 +1488,7 @@ function checkDrivingAlerts(userPos) {
 
         alertCooldowns[key] = nowMs;
         const street = a.t_rechov1 || a.name || 'לא ידוע';
-        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${Math.round(dist)} מטרים`);
+        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${hebrewNumber(dist)} מטרים`);
         showBanner(`📷 מצלמת נת"צ — ${street} (${Math.round(dist)} מ')`);
         break;  // one camera alert per GPS tick is enough
     }
@@ -1611,22 +1611,76 @@ function findNextSegment(current) {
 // =========================================================
 
 /**
+ * Convert a number to Hebrew words for speech (avoids English number reading).
+ */
+function hebrewNumber(n) {
+    n = Math.round(n);
+    if (n <= 0) return 'אפס';
+    const ones = ['', 'אחד', 'שניים', 'שלושה', 'ארבעה', 'חמישה', 'שישה', 'שבעה', 'שמונה', 'תשעה'];
+    const tens = ['', 'עשר', 'עשרים', 'שלושים', 'ארבעים', 'חמישים', 'שישים', 'שבעים', 'שמונים', 'תשעים'];
+    const teens = ['עשר', 'אחד עשרה', 'שתים עשרה', 'שלוש עשרה', 'ארבע עשרה', 'חמש עשרה', 'שש עשרה', 'שבע עשרה', 'שמונה עשרה', 'תשע עשרה'];
+    if (n < 10) return ones[n];
+    if (n >= 10 && n < 20) return teens[n - 10];
+    if (n < 100) {
+        const t = Math.floor(n / 10), o = n % 10;
+        return o === 0 ? tens[t] : `${tens[t]} ו${ones[o]}`;
+    }
+    if (n === 100) return 'מאה';
+    if (n < 200) return `מאה ו${hebrewNumber(n - 100)}`;
+    if (n === 200) return 'מאתיים';
+    if (n < 1000) {
+        const h = Math.floor(n / 100), r = n % 100;
+        const hWords = ['', 'מאה', 'מאתיים', 'שלוש מאות', 'ארבע מאות', 'חמש מאות', 'שש מאות', 'שבע מאות', 'שמונה מאות', 'תשע מאות'];
+        return r === 0 ? hWords[h] : `${hWords[h]} ו${hebrewNumber(r)}`;
+    }
+    return String(n); // fallback
+}
+
+/**
  * Speak a Hebrew sentence via the Web Speech API.
+ * Includes Chrome workaround for speechSynthesis getting stuck.
  */
 function speakHebrew(text) {
     if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
+
+    const synth = window.speechSynthesis;
+    synth.cancel();
+
+    // Chrome sometimes needs a resume kick after cancel
+    if (synth.paused) synth.resume();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang   = 'he-IL';
     utterance.rate   = 1.1;
     utterance.volume = 1.0;
 
-    const voices = window.speechSynthesis.getVoices();
+    // Try to find a Hebrew voice
+    const voices = synth.getVoices();
     const hv = voices.find(v => v.lang.startsWith('he'));
     if (hv) utterance.voice = hv;
 
-    window.speechSynthesis.speak(utterance);
+    synth.speak(utterance);
+
+    // Chrome bug: long utterances get stuck after ~15s. Keep-alive timer.
+    if (_speechKeepAlive) clearInterval(_speechKeepAlive);
+    _speechKeepAlive = setInterval(() => {
+        if (!synth.speaking) { clearInterval(_speechKeepAlive); return; }
+        synth.pause();
+        synth.resume();
+    }, 5000);
+}
+let _speechKeepAlive = null;
+
+/**
+ * Warm up speechSynthesis on user gesture to unlock audio on mobile/Chrome.
+ * Call this from any button click before speech is needed.
+ */
+function warmUpSpeech() {
+    if (!('speechSynthesis' in window)) return;
+    const dummy = new SpeechSynthesisUtterance('');
+    dummy.volume = 0;
+    dummy.lang = 'he-IL';
+    window.speechSynthesis.speak(dummy);
 }
 
 /**
@@ -3067,6 +3121,7 @@ function startSimPlayback() {
     // Enable voice for sim
     voiceEnabled = true;
     updateVoiceButton();
+    warmUpSpeech();  // unlock audio on user gesture (play button click)
 
     // Reset cooldowns for fresh sim
     alertCooldowns = {};
@@ -3214,7 +3269,7 @@ function checkSimAlerts(lat, lng) {
                 simAlertedSegments.add(camKey);
 
                 const camStreet = a.t_rechov1 || a.name || 'לא ידוע';
-                speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${camStreet}, ${Math.round(dist)} מטרים`);
+                speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${camStreet}, ${hebrewNumber(dist)} מטרים`);
                 showBanner(`📷 מצלמת נת"צ — ${camStreet} (${Math.round(dist)} מ')`);
                 break;
             }
