@@ -3163,61 +3163,62 @@ function figureOutCurrentSegment(lat, lng) {
  * Check and fire alerts for the current simulation position.
  */
 function checkSimAlerts(lat, lng) {
-    if (simCurrentIdx >= simRoute.length) return;
-
-    const item = simRoute[simCurrentIdx];
-    if (item.type !== 'segment' || !item.feature) return;  // no alerts for waypoints
-
-    const feature = item.feature;
+    const userPos = L.latLng(lat, lng);
     const now = new Date();
-    const status = getLaneStatus(feature, now);
-    const attrs = feature.attributes;
-    const street = attrs.street_name || 'לא ידוע';
 
-    // Use street+status as key so we alert once per street per status change
-    const statusKey = status.blocked ? 'blocked' : 'open';
-    const alertKey = 'sim_' + statusKey + '_' + street;
-
-    if (!simAlertedSegments.has(alertKey)) {
-        simAlertedSegments.add(alertKey);
-        if (status.blocked) {
-            speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
-            showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
-        } else {
-            speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
-            showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+    // --- Find the nearest bus lane to the car (regardless of route type) ---
+    let nearestFeature = null;
+    let nearestDist = Infinity;
+    for (const feature of allFeatures) {
+        if (!feature.geometry || !feature.geometry.paths) continue;
+        const d = distanceToPolyline(userPos, feature.geometry.paths);
+        if (d < nearestDist && d < SEGMENT_MATCH_RADIUS) {
+            nearestDist = d;
+            nearestFeature = feature;
         }
     }
 
-    // Alert for camera (only when lane is blocked)
-    if (!status.blocked) return;
-    const userPos = L.latLng(lat, lng);
-    for (const cam of allCameras) {
-        const g = cam.geometry;
-        if (!g || g.x === undefined) continue;
-        const a = cam.attributes;
-        if (a.status && a.status !== 'פעיל') continue;
+    // --- Lane status alert (blocked / open) ---
+    if (nearestFeature) {
+        const status = getLaneStatus(nearestFeature, now);
+        const attrs = nearestFeature.attributes;
+        const street = attrs.street_name || 'לא ידוע';
+        const statusKey = status.blocked ? 'blocked' : 'open';
+        const alertKey = 'sim_' + statusKey + '_' + street;
 
-        const mapping = cameraSegmentMap[a.OBJECTID];
-        if (!mapping) continue;
+        if (!simAlertedSegments.has(alertKey)) {
+            simAlertedSegments.add(alertKey);
+            if (status.blocked) {
+                speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
+                showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
+            } else {
+                speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
+                showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+            }
+        }
 
-        const onRoute = mapping.segments.some(seg =>
-            simRoute.some(item => item.type === 'segment' && item.feature && item.feature.attributes.oid === seg.attributes.oid)
-        );
-        if (!onRoute) continue;
+        // --- Camera alert (only when lane is blocked) ---
+        if (status.blocked) {
+            for (const cam of allCameras) {
+                const g = cam.geometry;
+                if (!g || g.x === undefined) continue;
+                const a = cam.attributes;
+                if (a.status && a.status !== 'פעיל') continue;
 
-        const camPos = L.latLng(g.y, g.x);
-        const dist = userPos.distanceTo(camPos);
-        if (dist > 100) continue;
+                const camPos = L.latLng(g.y, g.x);
+                const dist = userPos.distanceTo(camPos);
+                if (dist > 100) continue;
 
-        const camKey = 'sim_cam_' + a.OBJECTID;
-        if (simAlertedSegments.has(camKey)) continue;
-        simAlertedSegments.add(camKey);
+                const camKey = 'sim_cam_' + a.OBJECTID;
+                if (simAlertedSegments.has(camKey)) continue;
+                simAlertedSegments.add(camKey);
 
-        const street = a.t_rechov1 || a.name || 'לא ידוע';
-        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${Math.round(dist)} מטרים`);
-        showBanner(`📷 מצלמת נת"צ — ${street} (${Math.round(dist)} מ')`);
-        break;
+                const camStreet = a.t_rechov1 || a.name || 'לא ידוע';
+                speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${camStreet}, ${Math.round(dist)} מטרים`);
+                showBanner(`📷 מצלמת נת"צ — ${camStreet} (${Math.round(dist)} מ')`);
+                break;
+            }
+        }
     }
 }
 
