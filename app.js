@@ -1637,18 +1637,168 @@ function hebrewNumber(n) {
 }
 
 /**
- * Speak a Hebrew sentence via the Web Speech API.
- * Uses queue to prevent cancel() from killing speech.
+ * ---- Audio Alert System ----
+ * Two-layer approach:
+ *   1. AudioContext beep — always works once unlocked from user gesture
+ *   2. SpeechSynthesis — may or may not work depending on device/browser
+ * Both are attempted for every alert. The beep guarantees the driver hears something.
  */
+let _audioCtx = null;
+let _audioUnlocked = false;
 let _speechUnlocked = false;
 let _speechQueue = [];
 let _speechKeepAlive = null;
 
+/** Create or get the shared AudioContext */
+function _getAudioCtx() {
+    if (!_audioCtx) {
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return _audioCtx;
+}
+
+/**
+ * Play a short beep using Web Audio API.
+ * @param {number} freq  - frequency in Hz (default 880)
+ * @param {number} durMs - duration in ms (default 300)
+ * @param {number} count - number of beeps (default 1)
+ */
+function playBeep(freq, durMs, count) {
+    freq  = freq  || 880;
+    durMs = durMs || 300;
+    count = count || 1;
+    try {
+        const ctx = _getAudioCtx();
+        if (ctx.state === 'suspended') ctx.resume();
+        const now = ctx.currentTime;
+        for (let i = 0; i < count; i++) {
+            const osc  = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = freq;
+            osc.type = 'sine';
+            gain.gain.value = 0.5;
+            const start = now + i * (durMs + 100) / 1000;
+            const end   = start + durMs / 1000;
+            osc.start(start);
+            osc.stop(end);
+            // Fade out to avoid click
+            gain.gain.setValueAtTime(0.5, start);
+            gain.gain.linearRampToValueAtTime(0, end);
+        }
+    } catch (e) {
+        console.warn('Beep error:', e);
+    }
+}
+
+/** Play alert beep pattern (two short high beeps) */
+function playAlertBeep() {
+    playBeep(880, 200, 2);
+}
+
+/**
+ * Unlock audio systems from a user gesture (click/touch).
+ * Must be called from a direct click/touch handler.
+ */
+function unlockSpeech() {
+    console.log('[Audio] unlockSpeech called, audioUnlocked=' + _audioUnlocked + ', speechUnlocked=' + _speechUnlocked);
+
+    // ---- Unlock AudioContext ----
+    if (!_audioUnlocked) {
+        try {
+            const ctx = _getAudioCtx();
+            if (ctx.state === 'suspended') {
+                ctx.resume().then(() => console.log('[Audio] AudioContext resumed'));
+            }
+            // Play a very short quiet beep to fully unlock
+            const osc  = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            gain.gain.value = 0.01; // nearly silent
+            osc.start();
+            osc.stop(ctx.currentTime + 0.05);
+            _audioUnlocked = true;
+            console.log('[Audio] AudioContext unlocked');
+        } catch (e) {
+            console.warn('[Audio] AudioContext unlock failed:', e);
+        }
+    }
+
+    // ---- Unlock SpeechSynthesis ----
+    if (!_speechUnlocked && 'speechSynthesis' in window) {
+        const synth = window.speechSynthesis;
+        synth.cancel();
+
+        const utterance = new SpeechSynthesisUtterance('התראות מופעלות');
+        utterance.lang   = 'he-IL';
+        utterance.rate   = 1.1;
+        utterance.volume = 1.0;
+
+        const voices = synth.getVoices();
+        const hv = voices.find(v => v.lang && v.lang.startsWith('he'));
+        if (hv) {
+            utterance.voice = hv;
+            console.log('[Audio] Using Hebrew voice:', hv.name);
+        } else {
+            console.log('[Audio] No Hebrew voice found. Available:', voices.map(v => v.name + '(' + v.lang + ')').join(', '));
+        }
+
+        utterance.onstart = () => console.log('[Audio] Unlock utterance started');
+        utterance.onend = () => {
+            console.log('[Audio] Unlock utterance ended — speech unlocked');
+            _speechUnlocked = true;
+            _flushSpeechQueue();
+        };
+        utterance.onerror = (e) => {
+            console.warn('[Audio] Unlock utterance error:', e.error);
+            _speechUnlocked = true; // try anyway
+            _flushSpeechQueue();
+        };
+
+        synth.speak(utterance);
+        console.log('[Audio] Unlock utterance queued, speaking=' + synth.speaking + ', pending=' + synth.pending);
+
+        // Safety timeout: if onend/onerror never fire, unlock anyway after 3 seconds
+        setTimeout(() => {
+            if (!_speechUnlocked) {
+                console.warn('[Audio] Speech unlock timeout — forcing unlock');
+                _speechUnlocked = true;
+                _flushSpeechQueue();
+            }
+        }, 3000);
+    }
+
+    // Play a confirmation beep so user knows audio is working
+    setTimeout(() => playBeep(660, 150, 1), 300);
+}
+
+/** Flush queued speech messages */
+function _flushSpeechQueue() {
+    if (_speechQueue.length > 0) {
+        const latest = _speechQueue[_speechQueue.length - 1];
+        _speechQueue = [];
+        _speakNow(latest);
+    }
+}
+
+/**
+ * Speak a Hebrew sentence via the Web Speech API + play a beep.
+ */
 function speakHebrew(text) {
+    console.log('[Audio] speakHebrew:', text.substring(0, 40), '... unlocked=' + _speechUnlocked);
+
+    // Always play beep — this works even if speech doesn't
+    if (_audioUnlocked) {
+        playAlertBeep();
+    }
+
     if (!('speechSynthesis' in window)) return;
+
     if (!_speechUnlocked) {
-        // Queue for later — speech not yet unlocked by user gesture
         _speechQueue.push(text);
+        console.log('[Audio] Queued (speech not unlocked yet), queue size=' + _speechQueue.length);
         return;
     }
     _speakNow(text);
@@ -1656,7 +1806,12 @@ function speakHebrew(text) {
 
 function _speakNow(text) {
     const synth = window.speechSynthesis;
-    synth.cancel();
+
+    // Cancel any pending/speaking utterance
+    if (synth.speaking || synth.pending) {
+        synth.cancel();
+        // Small delay after cancel to let browser settle
+    }
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang   = 'he-IL';
@@ -1664,12 +1819,18 @@ function _speakNow(text) {
     utterance.volume = 1.0;
 
     const voices = synth.getVoices();
-    const hv = voices.find(v => v.lang.startsWith('he'));
+    const hv = voices.find(v => v.lang && v.lang.startsWith('he'));
     if (hv) utterance.voice = hv;
 
-    utterance.onerror = (e) => console.warn('Speech error:', e.error);
+    utterance.onstart = () => console.log('[Audio] Speech started:', text.substring(0, 30));
+    utterance.onend   = () => console.log('[Audio] Speech ended:', text.substring(0, 30));
+    utterance.onerror = (e) => console.warn('[Audio] Speech error:', e.error, 'text:', text.substring(0, 30));
 
-    synth.speak(utterance);
+    // Use a small delay to avoid race condition with cancel()
+    setTimeout(() => {
+        synth.speak(utterance);
+        console.log('[Audio] speak() called, speaking=' + synth.speaking);
+    }, 50);
 
     // Chrome bug: long utterances get stuck. Keep-alive timer.
     if (_speechKeepAlive) clearInterval(_speechKeepAlive);
@@ -1678,42 +1839,6 @@ function _speakNow(text) {
         synth.pause();
         synth.resume();
     }, 5000);
-}
-
-/**
- * Unlock speechSynthesis by speaking from a user gesture (click).
- * Must be called from a click/touch handler.
- */
-function unlockSpeech() {
-    if (!('speechSynthesis' in window)) return;
-    if (_speechUnlocked) return;
-
-    const synth = window.speechSynthesis;
-    // Speak a short confirmation to unlock the audio context
-    const utterance = new SpeechSynthesisUtterance('התראות מופעלות');
-    utterance.lang = 'he-IL';
-    utterance.rate = 1.1;
-    utterance.volume = 1.0;
-
-    const voices = synth.getVoices();
-    const hv = voices.find(v => v.lang.startsWith('he'));
-    if (hv) utterance.voice = hv;
-
-    utterance.onend = () => {
-        _speechUnlocked = true;
-        // Play any queued alerts
-        if (_speechQueue.length > 0) {
-            const next = _speechQueue.shift();
-            _speechQueue = []; // clear rest — only latest is relevant
-            _speakNow(next);
-        }
-    };
-    utterance.onerror = () => {
-        // Even if error, mark as unlocked so we try real speaks
-        _speechUnlocked = true;
-    };
-
-    synth.speak(utterance);
 }
 
 /**
