@@ -1437,8 +1437,8 @@ function checkDrivingAlerts(userPos) {
         const key = 'lane_blocked_' + street;
         if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
             alertCooldowns[key] = nowMs;
-            speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
-            showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
+            speakHebrew(`זהירות! נת״צ חסום, ${street}`);
+            showBanner(`🚫 נת״צ חסום — ${street}`);
         }
     }
 
@@ -1447,8 +1447,8 @@ function checkDrivingAlerts(userPos) {
         const key = 'lane_open_' + street;
         if (!alertCooldowns[key] || (nowMs - alertCooldowns[key]) >= ALERT_COOLDOWN_MS) {
             alertCooldowns[key] = nowMs;
-            speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
-            showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+            speakHebrew(`נת״צ פתוח, ${street}`);
+            showBanner(`✅ נת״צ פתוח — ${street}`);
         }
     }
 
@@ -1488,8 +1488,8 @@ function checkDrivingAlerts(userPos) {
 
         alertCooldowns[key] = nowMs;
         const street = a.t_rechov1 || a.name || 'לא ידוע';
-        speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${street}, ${hebrewNumber(dist)} מטרים`);
-        showBanner(`📷 מצלמת נת"צ — ${street} (${Math.round(dist)} מ')`);
+        speakHebrew(`מצלמה! ${street}, ${hebrewNumber(dist)} מטרים`);
+        showBanner(`📷 מצלמה — ${street} (${Math.round(dist)} מ')`);
         break;  // one camera alert per GPS tick is enough
     }
 }
@@ -1692,9 +1692,9 @@ function playBeep(freq, durMs, count) {
     }
 }
 
-/** Play alert beep pattern (two short high beeps) */
+/** Play single short alert beep */
 function playAlertBeep() {
-    playBeep(880, 200, 2);
+    playBeep(880, 150, 1);
 }
 
 /**
@@ -1733,7 +1733,7 @@ function unlockSpeech() {
 
         const utterance = new SpeechSynthesisUtterance('התראות מופעלות');
         utterance.lang   = 'he-IL';
-        utterance.rate   = 1.1;
+        utterance.rate   = 1.5;
         utterance.volume = 1.0;
 
         const voices = synth.getVoices();
@@ -1774,7 +1774,7 @@ function unlockSpeech() {
     setTimeout(() => playBeep(660, 150, 1), 300);
 }
 
-/** Flush queued speech messages */
+/** Flush queued speech messages (play only the latest) */
 function _flushSpeechQueue() {
     if (_speechQueue.length > 0) {
         const latest = _speechQueue[_speechQueue.length - 1];
@@ -1783,8 +1783,11 @@ function _flushSpeechQueue() {
     }
 }
 
+let _isSpeaking = false;
+
 /**
  * Speak a Hebrew sentence via the Web Speech API + play a beep.
+ * Uses a queue: does NOT cancel current speech. Next message plays after current ends.
  */
 function speakHebrew(text) {
     console.log('[Audio] speakHebrew:', text.substring(0, 40), '... unlocked=' + _speechUnlocked);
@@ -1801,21 +1804,24 @@ function speakHebrew(text) {
         console.log('[Audio] Queued (speech not unlocked yet), queue size=' + _speechQueue.length);
         return;
     }
+
+    // If currently speaking, queue this message (keep only latest in queue)
+    if (_isSpeaking) {
+        _speechQueue = [text];
+        console.log('[Audio] Currently speaking, queued for next');
+        return;
+    }
+
     _speakNow(text);
 }
 
 function _speakNow(text) {
     const synth = window.speechSynthesis;
-
-    // Cancel any pending/speaking utterance
-    if (synth.speaking || synth.pending) {
-        synth.cancel();
-        // Small delay after cancel to let browser settle
-    }
+    _isSpeaking = true;
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang   = 'he-IL';
-    utterance.rate   = 1.1;
+    utterance.rate   = 1.5;
     utterance.volume = 1.0;
 
     const voices = synth.getVoices();
@@ -1823,14 +1829,29 @@ function _speakNow(text) {
     if (hv) utterance.voice = hv;
 
     utterance.onstart = () => console.log('[Audio] Speech started:', text.substring(0, 30));
-    utterance.onend   = () => console.log('[Audio] Speech ended:', text.substring(0, 30));
-    utterance.onerror = (e) => console.warn('[Audio] Speech error:', e.error, 'text:', text.substring(0, 30));
+    utterance.onend   = () => {
+        console.log('[Audio] Speech ended:', text.substring(0, 30));
+        _isSpeaking = false;
+        // Play next queued message if any
+        if (_speechQueue.length > 0) {
+            const next = _speechQueue[_speechQueue.length - 1];
+            _speechQueue = [];
+            _speakNow(next);
+        }
+    };
+    utterance.onerror = (e) => {
+        console.warn('[Audio] Speech error:', e.error, 'text:', text.substring(0, 30));
+        _isSpeaking = false;
+        // Try next queued message
+        if (_speechQueue.length > 0) {
+            const next = _speechQueue[_speechQueue.length - 1];
+            _speechQueue = [];
+            _speakNow(next);
+        }
+    };
 
-    // Use a small delay to avoid race condition with cancel()
-    setTimeout(() => {
-        synth.speak(utterance);
-        console.log('[Audio] speak() called, speaking=' + synth.speaking);
-    }, 50);
+    synth.speak(utterance);
+    console.log('[Audio] speak() called, speaking=' + synth.speaking);
 
     // Chrome bug: long utterances get stuck. Keep-alive timer.
     if (_speechKeepAlive) clearInterval(_speechKeepAlive);
@@ -1839,6 +1860,14 @@ function _speakNow(text) {
         synth.pause();
         synth.resume();
     }, 5000);
+
+    // Safety: if onend never fires, reset _isSpeaking after 8 seconds
+    setTimeout(() => {
+        if (_isSpeaking) {
+            console.warn('[Audio] Safety timeout — resetting _isSpeaking');
+            _isSpeaking = false;
+        }
+    }, 8000);
 }
 
 /**
@@ -3399,11 +3428,11 @@ function checkSimAlerts(lat, lng) {
         if (!simAlertedSegments.has(alertKey)) {
             simAlertedSegments.add(alertKey);
             if (status.blocked) {
-                speakHebrew(`זהירות! נתיב תחבורה ציבורית אסור לנסיעה ברחוב ${street}`);
-                showBanner(`🚫 נתיב אסור לנסיעה — ${street}`);
+                speakHebrew(`זהירות! נת״צ חסום, ${street}`);
+                showBanner(`🚫 נת״צ חסום — ${street}`);
             } else {
-                speakHebrew(`נתיב תחבורה ציבורית פתוח לנסיעה ברחוב ${street}`);
-                showBanner(`✅ נתיב פתוח לנסיעה — ${street}`);
+                speakHebrew(`נת״צ פתוח, ${street}`);
+                showBanner(`✅ נת״צ פתוח — ${street}`);
             }
         }
 
@@ -3424,8 +3453,8 @@ function checkSimAlerts(lat, lng) {
                 simAlertedSegments.add(camKey);
 
                 const camStreet = a.t_rechov1 || a.name || 'לא ידוע';
-                speakHebrew(`זהירות! מצלמת אכיפת נתיב תחבורה ציבורית ברחוב ${camStreet}, ${hebrewNumber(dist)} מטרים`);
-                showBanner(`📷 מצלמת נת"צ — ${camStreet} (${Math.round(dist)} מ')`);
+                speakHebrew(`מצלמה! ${camStreet}, ${hebrewNumber(dist)} מטרים`);
+                showBanner(`📷 מצלמה — ${camStreet} (${Math.round(dist)} מ')`);
                 break;
             }
         }
