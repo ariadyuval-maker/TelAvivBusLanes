@@ -1,4 +1,4 @@
-const CACHE_NAME = 'buslanes-v29';
+const CACHE_NAME = 'buslanes-v30';
 const STATIC_ASSETS = [
     './',
     './index.html',
@@ -28,6 +28,12 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
+
+    // Let the browser cache map tiles using the provider's HTTP headers.
+    // Do not store tiles in the application's offline cache.
+    if (url.hostname === 'tile.openstreetmap.org') {
+        return;
+    }
 
     // Always go to network for GIS API calls
     if (url.hostname.includes('gisn.tel-aviv.gov.il')) {
