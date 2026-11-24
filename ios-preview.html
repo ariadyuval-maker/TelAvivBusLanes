@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>תצוגת iPhone — נתיבי תל אביב</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e8edf3;color:#182435;font-family:Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 12px;gap:16px}h1{font-size:21px;margin:0}p{margin:8px 0 0;text-align:center;font-size:14px;color:#526175;line-height:1.5}.stage{position:relative;flex:none}.phone{position:absolute;top:0;left:0;width:426px;height:898px;background:#141517;border-radius:62px;padding:12px;box-shadow:0 20px 50px #17223640,inset 0 0 0 3px #68707a;transform-origin:top left;direction:ltr}.screen{width:402px;height:874px;border-radius:50px;overflow:hidden;background:#fff;position:relative}.status{height:62px;position:absolute;inset:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 29px;background:#f7f9fc;font-size:16px;font-weight:700}.island{position:absolute;width:126px;height:36px;background:#08090b;border-radius:24px;top:11px;left:138px}.signals{font-size:13px;letter-spacing:1px}.app{position:absolute;top:62px;left:0;width:402px;height:778px;border:0;background:white}.bottom{position:absolute;bottom:0;height:34px;width:100%;background:#f7f9fc}.home{position:absolute;width:140px;height:5px;border-radius:4px;background:#17191d;bottom:9px;left:131px}.caption{max-width:580px}a{color:#225eb3}.side{position:absolute;width:4px;background:#555b63;left:-3px;top:165px;height:62px;border-radius:3px}.side.right{left:auto;right:-3px;top:220px;height:90px}
+</style>
+<header><h1>תצוגה מקדימה לאייפון</h1><p>האתר הפעיל בתוך מסגרת טלפון — אפשר להזיז את המפה וללחוץ על הכפתורים</p></header>
+<div class="stage" id="stage"><div class="phone" id="phone"><span class="side"></span><span class="side right"></span><div class="screen"><div class="status"><span>9:41</span><span class="signals" aria-label="קליטה, Wi-Fi וסוללה">▂▄▆ ▰</span></div><div class="island" aria-hidden="true"></div><iframe class="app" src="/index.html" title="נתיבי תל אביב — תצוגת אפליקציה"></iframe><div class="bottom"><div class="home"></div></div></div></div></div>
+<p class="caption">הדמיה חזותית בקירוב למסך Pro בגודל 402×874; אינה סימולטור iOS או אימות למידות iPhone 18 Pro.<br><a href="/index.html">פתיחת האתר ללא מסגרת</a></p>
+<script>
+function fit(){const scale=Math.min(1,(innerWidth-32)/426,Math.max(280,innerHeight-172)/898);document.getElementById('phone').style.transform=`scale(${scale})`;Object.assign(document.getElementById('stage').style,{width:`${426*scale}px`,height:`${898*scale}px`});}addEventListener('resize',fit);fit();
+</script>
+</html>
