@@ -1,0 +1,10 @@
+{
+  "name": "tel-aviv-bus-lanes",
+  "private": true,
+  "scripts": {
+    "dev": "node tools/preview.mjs",
+    "update:hours": "node tools/update-hours.mjs",
+    "test": "node --test tools/*.test.mjs"
+  },
+  "devDependencies": { "playwright": "1.58.2" }
+}

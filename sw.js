@@ -1,8 +1,10 @@
-const CACHE_NAME = 'buslanes-v30';
+const CACHE_NAME = 'buslanes-v32';
 const STATIC_ASSETS = [
     './',
     './index.html',
     './app.js',
+    './voice-controls.js',
+    './camera-data.js',
     './bus_lane_hours.js',
     './community_reports.js',
     './manifest.json',

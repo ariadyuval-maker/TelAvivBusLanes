@@ -123,6 +123,7 @@ const STREET_ALIASES = {
  */
 function matchScore(entry, feature) {
     const attrs = feature.attributes;
+    if (entry.sourceDirection && entry.sourceDirection !== attrs.direction_name) return 0;
     const featureStreet = normalizeStreet(attrs.street_name);
     const entryStreet = normalizeStreet(entry.street);
 
@@ -383,48 +384,24 @@ async function fetchAllFeatures() {
 /**
  * Fetch all camera features from Layer 949.
  */
+let cameraDataLoader;
+let cameraDataSource = 'unavailable';
 async function fetchAllCameras() {
-    let cameras = [];
-    let offset = 0;
-    const batchSize = 2000;
-    let hasMore = true;
-
-    while (hasMore) {
-        const params = new URLSearchParams({
-            where: '1=1',
-            outFields: '*',
-            outSR: '4326',
-            f: 'json',
-            resultOffset: offset,
-            resultRecordCount: batchSize
-        });
-
-        const url = `${CONFIG.camerasBaseUrl}/query?${params}`;
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const data = await response.json();
-
-            if (data.error) {
-                throw new Error(data.error.message || 'ArcGIS API error');
-            }
-
-            if (data.features && data.features.length > 0) {
-                cameras = cameras.concat(data.features);
-                offset += data.features.length;
-                hasMore = data.exceededTransferLimit === true;
-            } else {
-                hasMore = false;
-            }
-        } catch (error) {
-            console.error('Error fetching cameras:', error);
-            hasMore = false;
-        }
+    cameraDataLoader ||= window.BusLaneCameraData.createLoader({ baseUrl: CONFIG.camerasBaseUrl });
+    const result = await cameraDataLoader.load();
+    cameraDataSource = result.source;
+    const notice = document.getElementById('cameraDataNotice');
+    if (notice) {
+        notice.hidden = result.source === 'live';
+        notice.textContent = result.source === 'cache'
+            ? `עדכון המצלמות נכשל. מוצג העותק התקין האחרון מ־${new Date(result.savedAt).toLocaleString('he-IL')}.`
+            : 'נתוני המצלמות אינם זמינים כרגע ואין עותק שמור. היעדר סימונים במפה אינו מעיד שאין מצלמות.';
     }
-
-    console.log(`Fetched ${cameras.length} camera features from Tel Aviv GIS`);
-    return cameras;
+    const count = document.getElementById('cameraCount');
+    if (count) count.title = result.savedAt ? `נתוני מצלמות מ־${new Date(result.savedAt).toLocaleString('he-IL')}` : 'נתוני המצלמות אינם זמינים';
+    if (result.error) console.warn('Camera update failed; source:', result.source, result.error);
+    console.log(`Loaded ${result.features.length} validated camera features (${result.source})`);
+    return result.features;
 }
 
 // ============================================================
@@ -820,7 +797,7 @@ function renderCameras(cameras) {
 
     // Update camera counter
     const el = document.getElementById('cameraCount');
-    if (el) el.textContent = activeCount;
+    if (el) el.textContent = cameraDataSource === 'unavailable' ? '?' : activeCount;
 
     console.log(`Rendered ${cameras.length} cameras (${activeCount} active)`);
 }
@@ -1737,7 +1714,7 @@ function unlockSpeech() {
         utterance.volume = 1.0;
 
         const voices = synth.getVoices();
-        const hv = voices.find(v => v.lang && v.lang.startsWith('he'));
+        const hv = window.BusLaneVoices?.getVoice() || voices.find(v => v.lang && v.lang.startsWith('he'));
         if (hv) {
             utterance.voice = hv;
             console.log('[Audio] Using Hebrew voice:', hv.name);
@@ -1825,7 +1802,7 @@ function _speakNow(text) {
     utterance.volume = 1.0;
 
     const voices = synth.getVoices();
-    const hv = voices.find(v => v.lang && v.lang.startsWith('he'));
+    const hv = window.BusLaneVoices?.getVoice() || voices.find(v => v.lang && v.lang.startsWith('he'));
     if (hv) utterance.voice = hv;
 
     utterance.onstart = () => console.log('[Audio] Speech started:', text.substring(0, 30));
@@ -1991,7 +1968,17 @@ function setupDriveControls() {
     const btnVoice = document.getElementById('btnVoice');
     const btnDrive = document.getElementById('btnDrive');
 
-    if (btnVoice) btnVoice.addEventListener('click', toggleVoice);
+    if (btnVoice) window.BusLaneVoices.setup(btnVoice, toggleVoice, voice => {
+        // Preview is an explicit user gesture; it does not turn alerts or GPS on.
+        if (!('speechSynthesis' in window)) return;
+        if (_isSpeaking || window.speechSynthesis.speaking) {
+            showBanner('המתן לסיום ההודעה הקולית ונסה שוב');
+            return;
+        }
+        const sample = new SpeechSynthesisUtterance('זה הקול שישמיע את ההתראות על נתיבי התחבורה הציבורית');
+        sample.lang = 'he-IL'; sample.voice = voice; sample.rate = 1.5;
+        window.speechSynthesis.speak(sample);
+    });
     if (btnDrive) btnDrive.addEventListener('click', toggleDrivingMode);
 
     // Reports button
