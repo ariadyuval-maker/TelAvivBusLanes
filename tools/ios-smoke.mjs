@@ -30,6 +30,15 @@ async function main() {
     run(['bootstatus', device.udid, '-b'], 240000);
     run(['status_bar', device.udid, 'override', '--time', '9:41', '--batteryState', 'charged', '--batteryLevel', '100']);
     run(['install', device.udid, path.resolve('artifacts/ios-derived/Build/Products/Debug-iphonesimulator/App.app')]);
+    // CI-only permission on a disposable simulator; never changes a real phone.
+    // This checks the granted-permission UI, not the first-run permission flow.
+    run(['privacy', device.udid, 'grant', 'location', appId]);
+    run(['location', device.udid, 'set', '32.0853,34.7818']);
+    writeFileSync(path.join(output, 'scenario.json'), JSON.stringify({
+        permission: 'location-while-in-use',
+        location: { latitude: 32.0853, longitude: 34.7818, synthetic: true },
+        note: 'Visual check only; not a background GPS or first-run permission test'
+    }, null, 2));
     const launch = run(['launch', device.udid, appId]);
     writeFileSync(path.join(output, 'launch.txt'), launch);
     // Allow network-backed content to load; screenshot review decides UI success.
@@ -45,3 +54,4 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+
