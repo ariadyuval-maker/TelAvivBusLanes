@@ -1,0 +1,58 @@
+name: iOS simulator build
+
+# Build the iOS branch without signing credentials.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/ios]
+    paths:
+      - '.github/workflows/ios-build.yml'
+      - 'capacitor.config.json'
+      - 'package*.json'
+      - 'tools/build-mobile.mjs'
+      - 'tools/validate-mobile*'
+      - '*.js'
+      - '*.html'
+      - '*.css'
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Select Xcode 26
+        run: |
+          XCODE_APP=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)
+          test -n "$XCODE_APP" || { echo 'Xcode 26 unavailable on this runner'; ls /Applications; exit 1; }
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Test web logic
+        run: npm test
+      - name: Generate or sync iOS project
+        run: |
+          npm run build:mobile
+          npm run validate:mobile
+          if [ ! -d ios ]; then npx --no-install cap add ios; fi
+          npx --no-install cap sync ios
+      - name: Build unsigned simulator application
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath artifacts/ios-derived CODE_SIGNING_ALLOWED=NO build
+      - name: Package simulator application
+        run: ditto -c -k --keepParent artifacts/ios-derived/Build/Products/Debug-iphonesimulator/App.app artifacts/ios-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: artifacts/ios-simulator.zip
+          retention-days: 7
