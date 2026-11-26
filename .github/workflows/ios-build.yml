@@ -12,6 +12,7 @@ on:
       - 'package*.json'
       - 'tools/build-mobile.mjs'
       - 'tools/validate-mobile*'
+      - 'tools/ios-smoke*'
       - '*.js'
       - '*.html'
       - '*.css'
@@ -56,7 +57,17 @@ jobs:
             -derivedDataPath artifacts/ios-derived CODE_SIGNING_ALLOWED=NO build
       - name: Package simulator application
         run: ditto -c -k --keepParent artifacts/ios-derived/Build/Products/Debug-iphonesimulator/App.app artifacts/ios-simulator.zip
+      - name: Install and launch on iPhone simulator
+        run: node tools/ios-smoke.mjs
+      - name: Upload simulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-smoke-evidence
+          path: artifacts/ios-smoke/
+          retention-days: 7
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ios-simulator-app
           path: artifacts/ios-simulator.zip
