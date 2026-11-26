@@ -121,9 +121,35 @@ const STREET_ALIASES = {
  * Score how well a schedule entry matches a GIS feature.
  * Higher = better match. Returns 0 if no match.
  */
+function normalizeLaneDirection(value) {
+    const text = String(value || '').trim().toUpperCase();
+    if (['N', 'S', 'E', 'W'].includes(text)) return text;
+    return { 'צפ': 'N', 'צפון': 'N', 'דר': 'S', 'דרום': 'S', 'מז': 'E', 'מזרח': 'E', 'מע': 'W', 'מערב': 'W' }[text] || '';
+}
+
+function scheduleDirection(entry) {
+    if (entry.sourceDirection) return normalizeLaneDirection(entry.sourceDirection);
+    const section = String(entry.section || '').replace(/[\u200b-\u200f\ufeff]/g, '').trim();
+    for (const [direction, pattern] of [
+        ['N', /^(?:לכיוון\s+צפון|מדרום\s+לצפון)/],
+        ['S', /^(?:לכיוון\s+דרום|מצפון\s+לדרום)/],
+        ['E', /^(?:לכיוון\s+מזרח|ממערב\s+למזרח)/],
+        ['W', /^(?:לכיוון\s+מערב|ממזרח\s+למערב)/]
+    ]) {
+        if (pattern.test(section)) return direction;
+    }
+    return '';
+}
+
+function scheduleDirectionFits(entry, feature) {
+    const expected = scheduleDirection(entry);
+    const actual = normalizeLaneDirection(feature.attributes.direction_name);
+    return !expected || !actual || expected === actual;
+}
+
 function matchScore(entry, feature) {
     const attrs = feature.attributes;
-    if (entry.sourceDirection && entry.sourceDirection !== attrs.direction_name) return 0;
+    if (!scheduleDirectionFits(entry, feature)) return 0;
     const featureStreet = normalizeStreet(attrs.street_name);
     const entryStreet = normalizeStreet(entry.street);
 
@@ -131,7 +157,8 @@ function matchScore(entry, feature) {
 
     // Street name must match (directly or via alias)
     const aliased = STREET_ALIASES[featureStreet] || featureStreet;
-    const match = (featureStreet === entryStreet) || (aliased === entryStreet);
+    const entryAliased = STREET_ALIASES[entryStreet] || entryStreet;
+    const match = (featureStreet === entryStreet) || (aliased === entryStreet) || (aliased === entryAliased);
     // Also check if one contains the other (for partial matches like "נמיר" in "דרך נמיר")
     const partialMatch = !match && (entryStreet.includes(featureStreet) || featureStreet.includes(entryStreet));
 
@@ -143,7 +170,7 @@ function matchScore(entry, feature) {
     const section = entry.section || '';
     const fromStreet = normalizeStreet(attrs.from_street);
     const toStreet = normalizeStreet(attrs.to_street);
-    const direction = attrs.direction_name || '';
+    const direction = normalizeLaneDirection(attrs.direction_name);
 
     // Check if section mentions from/to streets
     if (fromStreet && section.includes(fromStreet)) score += 3;
@@ -180,15 +207,16 @@ function findSchedule(feature) {
     let candidates = [];
     for (const key of Object.keys(SCHEDULE_BY_STREET)) {
         const normKey = normalizeStreet(key);
+        const aliasedKey = STREET_ALIASES[normKey] || normKey;
         for (const variant of variants) {
-            if (normKey === variant || normKey.includes(variant) || variant.includes(normKey)) {
+            if (normKey === variant || aliasedKey === variant || normKey.includes(variant) || variant.includes(normKey)) {
                 candidates = candidates.concat(SCHEDULE_BY_STREET[key]);
             }
         }
     }
 
     // Deduplicate
-    candidates = [...new Set(candidates)];
+    candidates = [...new Set(candidates)].filter(entry => scheduleDirectionFits(entry, feature));
 
     if (candidates.length === 0) return null;
 
@@ -227,10 +255,11 @@ function getLaneStatus(feature, now) {
     const attrs = feature.attributes;
     const dayType = getDayType(now);
     const currentHr = getCurrentDecimalHour(now);
-    const status = attrs.status;
+    const status = typeof attrs.status === 'string' ? attrs.status.trim() : attrs.status;
 
-    // If lane is not active, it's open
-    if (status && status !== 'פעיל') {
+    // Existing GIS lanes must also be evaluated against their operating hours.
+    // Missing hours continue to the unknown state instead of opening the lane.
+    if (status && status !== 'פעיל' && status !== 'קיים') {
         return { blocked: false, reason: 'נתצ לא פעיל', category: 'open', schedule: null, signOverride: null };
     }
 
