@@ -12,7 +12,6 @@ on:
       - 'package*.json'
       - 'tools/build-mobile.mjs'
       - 'tools/validate-mobile*'
-      - 'tools/ios-smoke*'
       - '*.js'
       - '*.html'
       - '*.css'
