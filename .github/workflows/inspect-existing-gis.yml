@@ -1,0 +1,50 @@
+name: Inspect existing GIS lanes
+on:
+  push:
+    branches: ['diagnostics/gis-existing']
+    paths: ['.github/workflows/inspect-existing-gis.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read public municipality GIS
+        run: |
+          node --input-type=module <<'JS'
+          import {writeFile, appendFile} from 'node:fs/promises';
+          const base='https://gisn.tel-aviv.gov.il/ArcGIS/rest/services/IView2/MapServer/611/query';
+          const where="status LIKE '%קיים%'";
+          async function query(params){
+            const r=await fetch(base+'?'+new URLSearchParams({f:'json',...params}),{signal:AbortSignal.timeout(30000)});
+            if(!r.ok)throw Error('HTTP '+r.status);
+            const d=await r.json();if(d.error)throw Error(JSON.stringify(d.error));return d;
+          }
+          const first=await query({where,returnCountOnly:'true'});
+          if(!Number.isInteger(first.count))throw Error('Invalid count');
+          const features=[];
+          for(let offset=0;offset<first.count;){
+            const d=await query({where,outFields:'*',returnGeometry:'false',resultOffset:String(offset),resultRecordCount:'1000',orderByFields:'oid ASC'});
+            if(!Array.isArray(d.features)||!d.features.length)throw Error('Missing batch');
+            features.push(...d.features);offset+=d.features.length;
+          }
+          const last=await query({where,returnCountOnly:'true'});
+          if(features.length!==first.count||last.count!==first.count||new Set(features.map(f=>f.attributes.oid)).size!==first.count)throw Error('Incomplete or changing data');
+          const report={source:base,where,capturedAt:new Date().toISOString(),count:features.length,records:features.map(f=>f.attributes)};
+          await writeFile('existing-gis-lanes.json',JSON.stringify(report,null,2));
+          const fields=['oid','street_name','from_street','to_street','direction_name','status','st_oper_hrs_sun_thurs','end_oper_hrs_sun_thurs','st_oper_hrs_sun_thurs1','end_oper_hrs_sun_thurs1','st_oper_hrs_fri_eve_holida','end_oper_hrs_fri_eve_holida','st_oper_hrs_sat_leg_holida','end_oper_hrs_sat_leg_holida1'];
+          console.log('GIS_REPORT_BEGIN');
+          console.log(JSON.stringify({...report,records:report.records.map(r=>Object.fromEntries(fields.map(k=>[k,r[k]])))}));
+          console.log('GIS_REPORT_END');
+          await appendFile(process.env.GITHUB_STEP_SUMMARY,'Verified '+report.count+' existing GIS lanes. Full source records are in the artifact.');
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: existing-gis-lanes
+          path: existing-gis-lanes.json
+          retention-days: 7
