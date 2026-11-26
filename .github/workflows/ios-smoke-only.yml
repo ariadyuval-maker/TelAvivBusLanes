@@ -1,0 +1,93 @@
+name: iOS simulator check (reuse build)
+
+on:
+  push:
+    branches: [feature/ios]
+    paths:
+      - 'tools/ios-smoke*'
+      - '.github/workflows/ios-smoke-only.yml'
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful iOS simulator build run ID
+        required: false
+        type: string
+      source_commit:
+        description: Full 40-character commit SHA used by that build
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ios-smoke-only-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - name: Verify source run identity
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run_id }}
+          SOURCE_SHA: ${{ inputs.source_commit }}
+        run: |
+          if [ -z "$SOURCE_RUN" ] && [ -z "$SOURCE_SHA" ]; then
+            SOURCE_RUN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ios-build.yml/runs?branch=feature%2Fios&status=success&per_page=1" --jq '.workflow_runs[0].id')
+            [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]] || { echo 'No successful source build'; exit 1; }
+            SOURCE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" --jq '.head_sha')
+            export SOURCE_RUN SOURCE_SHA
+          fi
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          node -e 'const fs=require("fs"); const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/source-run.json")); if(r.status!=="completed" || r.conclusion!=="success" || r.head_sha!==process.env.SOURCE_SHA || r.head_branch!=="feature/ios" || r.path!==".github/workflows/ios-build.yml") throw Error("Source build identity/status mismatch");'
+          echo "run_id=$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout current test script
+        uses: actions/checkout@v4
+        with:
+          path: smoke-tools
+      - name: Checkout matching app configuration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: app-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Select Xcode 26
+        run: |
+          XCODE_APP=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)
+          test -n "$XCODE_APP" || { echo 'Xcode 26 unavailable'; exit 1; }
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+      - name: Download compiled simulator application
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: downloaded-build
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+      - name: Extract existing application
+        run: |
+          mkdir -p app-source/artifacts/ios-derived/Build/Products/Debug-iphonesimulator
+          ditto -x -k downloaded-build/ios-simulator.zip app-source/artifacts/ios-derived/Build/Products/Debug-iphonesimulator
+          test -d app-source/artifacts/ios-derived/Build/Products/Debug-iphonesimulator/App.app
+          mkdir -p app-source/artifacts/ios-smoke
+          cp "$RUNNER_TEMP/source-run.json" app-source/artifacts/ios-smoke/source-run.json
+      - name: Run current simulator check against existing app
+        working-directory: app-source
+        run: node ../smoke-tools/tools/ios-smoke.mjs
+      - name: Upload screenshot and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-smoke-evidence
+          path: app-source/artifacts/ios-smoke/
+          retention-days: 7

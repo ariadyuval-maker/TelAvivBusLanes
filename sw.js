@@ -1,7 +1,8 @@
-const CACHE_NAME = 'buslanes-v32';
+const CACHE_NAME = 'buslanes-ios-layout-v1';
 const STATIC_ASSETS = [
     './',
     './index.html',
+    './mobile-layout.css',
     './app.js',
     './voice-controls.js',
     './camera-data.js',

@@ -2,9 +2,21 @@
   "name": "tel-aviv-bus-lanes",
   "private": true,
   "scripts": {
+    "build:mobile": "node tools/build-mobile.mjs",
+    "validate:mobile": "node tools/validate-mobile.mjs",
+    "ios:add": "npm run build:mobile && cap add ios",
+    "ios:sync": "npm run build:mobile && cap sync ios",
+    "ios:open": "cap open ios",
     "dev": "node tools/preview.mjs",
     "update:hours": "node tools/update-hours.mjs",
     "test": "node --test tools/*.test.mjs"
   },
-  "devDependencies": { "playwright": "1.58.2" }
+  "dependencies": {
+    "@capacitor/core": "8.6.3",
+    "@capacitor/ios": "8.6.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.3",
+    "playwright": "1.58.2"
+  }
 }

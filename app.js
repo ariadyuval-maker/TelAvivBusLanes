@@ -2708,6 +2708,7 @@ function zoomToReport(reportId) {
 // ============================================================
 
 function registerServiceWorker() {
+    if (window.BUSLANES_NATIVE_BUNDLE) return;
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
             .then(reg => {

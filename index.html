@@ -2,7 +2,7 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#3498db">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26,6 +26,7 @@
         #map {
             width: 100%;
             height: 100vh;
+            height: 100dvh;
         }
 
         /* Top info bar */
@@ -236,6 +237,8 @@
 
 
         @media (max-width: 768px) {
+            .leaflet-control-zoom { display: none; }
+            .clock-section { display: none; }
             .info-bar {
                 flex-wrap: wrap;
                 justify-content: center;
@@ -646,6 +649,7 @@
         .segment-picker input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; }
         .segment-dir { font-size: 11px; color: #888; margin-right: auto; }
     </style>
+    <link rel="stylesheet" href="mobile-layout.css">
 </head>
 <body>
     <!-- Loading overlay -->
