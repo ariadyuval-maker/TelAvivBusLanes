@@ -1,5 +1,15 @@
 # iOS build preparation
 
+## Current checkpoint (2026-11-26)
+
+Node 26.13.1/npm 11.20.0 are installed at C:\Program Files\nodejs; the agent
+shell needed that directory prepended to its process PATH. Capacitor core/ios/cli
+8.6.3 match package-lock.json and installed modules. The native ios/ Xcode
+project was successfully generated and synchronized on Windows. All 22 tests,
+web build and bundle validation passed. CI now uses npm ci. Compilation still
+requires macOS/Xcode and has not been confirmed. Earlier checkpoints below are
+historical; the previous package-installation blocker is resolved.
+
 Latest checkpoint: capacitor.config.json now specifies webDir and a provisional
 development app ID; package.json pins Capacitor core/ios/cli to 8.0.0. See
 MAC_HANDOFF.md for the current setup instructions. A manual simulator-build

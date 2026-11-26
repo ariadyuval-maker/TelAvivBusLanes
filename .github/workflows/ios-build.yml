@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/ios-build.yml'
       - 'capacitor.config.json'
+      - 'ios/**'
       - 'package*.json'
       - 'tools/build-mobile.mjs'
       - 'tools/validate-mobile*'
@@ -34,7 +35,7 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
       - name: Install dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test web logic
         run: npm test
       - name: Generate or sync iOS project

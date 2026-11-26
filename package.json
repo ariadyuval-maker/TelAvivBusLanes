@@ -12,11 +12,11 @@
     "test": "node --test tools/*.test.mjs"
   },
   "dependencies": {
-    "@capacitor/core": "8.0.0",
-    "@capacitor/ios": "8.0.0"
+    "@capacitor/core": "8.6.3",
+    "@capacitor/ios": "8.6.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.0.0",
+    "@capacitor/cli": "8.6.3",
     "playwright": "1.58.2"
   }
 }

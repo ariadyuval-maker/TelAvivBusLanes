@@ -21,16 +21,15 @@ git clone --branch feature/ios https://github.com/ariadyuval-maker/TelAvivBusLan
 cd TelAvivBusLanes
 node --version
 xcodebuild -version
-npm install
+npm ci
 npm test
-npm run ios:add
+npm run ios:sync
 npm run ios:open
 ```
 
-If ios/ already exists, use `npm run ios:sync` instead of ios:add. Capacitor
-packages are pinned to 8.0.0 as a common baseline; dependency installation and
-the first build have not yet been verified. Commit the resulting package lock
-and review the generated native project after a successful build.
+The ios/ project was generated on Windows with Capacitor 8.6.3; the matching
+package-lock.json is included. Use ios:sync to refresh generated web assets.
+The initial Xcode build and physical-device behavior remain unverified.
 
 In Xcode select App > Signing & Capabilities, choose the intended team, and
 check the bundle ID (currently a development proposal,
@@ -58,7 +57,7 @@ iPhone and is not an IPA.
 ## Cloud workflow
 
 The manual `iOS simulator build` GitHub Action builds without signing secrets.
-It has not run yet. It assumes Xcode_26.0.app is present on macos-15 and fails
-explicitly otherwise. First run may require adjusting the selected runner/Xcode
+It selects an installed Xcode 26 app on macos-15 and fails
+explicitly if none is present. First run may require adjusting the selected runner/Xcode
 path based on runner inventory. Never report this build as passing until CI
 confirms it. It builds a simulator app, not a device installation package.
